@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { Input, Checkbox } from '../components/ui/controls';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import type { PreviewGroup } from '../components/SaveReviewModal';
 import { EditFields } from '../write/EditFields';
 import {
@@ -53,6 +54,7 @@ export function BatchPanel() {
   const [building, setBuilding] = useState(false);
   const [buildError, setBuildError] = useState<unknown>(null);
   const [buildNote, setBuildNote] = useState<string | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
 
   const runner = useWriteRunner();
 
@@ -346,14 +348,54 @@ export function BatchPanel() {
 
       {runner.progress !== null && (
         <div className="rounded-lg border border-accent/40 bg-accent-soft px-3 py-2 text-xs" role="status">
-          <div className="font-medium">Writing — phase {runner.progress.phase}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="font-medium">Writing — phase {runner.progress.phase}</div>
+            {runner.activeBatchId !== null && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto"
+                disabled={runner.cancelState?.status === 'requested'}
+                onClick={() => setCancelConfirmOpen(true)}
+                title="Stops the batch between files — already-written files keep their verified backups."
+              >
+                {runner.cancelState?.status === 'requested' ? 'Cancelling…' : 'Cancel this batch'}
+              </Button>
+            )}
+          </div>
           <div className="mt-1">
             {runner.progress.index} of {runner.progress.total} files processed. MetaDesk never
             hard-kills a write: this runs to completion chunk by chunk, and the Results report opens
             when it finishes.
           </div>
+          {runner.cancelState !== null && (
+            <div className="mt-1 text-muted-foreground" role="status">
+              {runner.cancelState.status === 'requested'
+                ? runner.cancelState.note
+                : `Cancel was not accepted: ${runner.cancelState.note}`}
+            </div>
+          )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={cancelConfirmOpen}
+        danger
+        title="Cancel this batch?"
+        confirmLabel="Request cancel"
+        cancelLabel="Keep writing"
+        onConfirm={() => {
+          setCancelConfirmOpen(false);
+          void runner.requestCancel();
+        }}
+        onCancel={() => setCancelConfirmOpen(false)}
+      >
+        <p>
+          The file being written right now finishes safely with its full backup and verification.
+          Already-written files keep their verified backups; the rest will not be attempted, and
+          the Results report lists every one of them honestly.
+        </p>
+      </ConfirmDialog>
 
       {runner.modal}
     </div>

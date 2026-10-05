@@ -8,7 +8,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { explainFailure } from '../write/failures';
 import { useWriteRunner } from '../write/useWriteRun';
-import type { WriteOutcome } from '../write/types';
+import type { BatchOutcomeWithCancel, WriteOutcome, WriteOutcomeNotAttempted } from '../write/types';
 import { basename, formatDateTime } from '../lib/format';
 
 /**
@@ -25,6 +25,10 @@ export function ResultsReport() {
   const [retryError, setRetryError] = useState<unknown>(null);
 
   const outcome = lastWrite?.outcome;
+  const cancelledBatch =
+    outcome !== undefined && (outcome as BatchOutcomeWithCancel).cancelled === true
+      ? (outcome as BatchOutcomeWithCancel)
+      : null;
   const counts = useMemo(
     () =>
       outcome === undefined
@@ -116,6 +120,35 @@ export function ResultsReport() {
             before trusting those backups.
           </div>
         )
+      )}
+
+      {/* Cancelled batch: the not-attempted files are named, never hidden */}
+      {cancelledBatch !== null && cancelledBatch.notAttempted !== undefined && cancelledBatch.notAttempted > 0 && (
+        <div className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+          <div className="font-semibold">
+            You cancelled this batch — {cancelledBatch.notAttempted} file
+            {cancelledBatch.notAttempted === 1 ? ' was' : 's were'} never attempted.
+          </div>
+          <p className="mt-1 text-xs">
+            Files already written kept their verified backups; the file being written finished
+            safely before the stop. The files below were not read from or written to. To include
+            them, preview the batch again.
+          </p>
+          {(cancelledBatch.notAttemptedFilePaths ?? []).length > 0 && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-xs text-muted-foreground">
+                Show the {cancelledBatch.notAttemptedFilePaths?.length} not-attempted path(s)
+              </summary>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 font-mono text-[11px]">
+                {(cancelledBatch.notAttemptedFilePaths ?? []).map((filePath) => (
+                  <li key={filePath} className="break-all">
+                    {filePath}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
       )}
 
       {lastWrite.consistencyNotes.length > 0 && (
@@ -237,6 +270,10 @@ function FileRow({ file }: { file: WriteOutcome }) {
   const [open, setOpen] = useState(false);
   const firstError = file.errors[0];
   const explanation = firstError !== undefined ? explainFailure(firstError) : null;
+  // A cancelled batch marks the files it never attempted with additive flags
+  // (the three-valued status stays intact: 'unchanged' is literally true).
+  const notAttempted = (file as WriteOutcomeNotAttempted).notAttempted === true;
+  const notAttemptedReason = (file as WriteOutcomeNotAttempted).notAttemptedReason;
 
   return (
     <li>
@@ -251,7 +288,8 @@ function FileRow({ file }: { file: WriteOutcome }) {
           {basename(file.filePath)}
         </span>
         {file.status === 'updated' && <Badge tone="success">updated{file.verified === true ? ' · verified' : ''}</Badge>}
-        {file.status === 'unchanged' && <Badge tone="neutral">unchanged — nothing happened</Badge>}
+        {file.status === 'unchanged' && !notAttempted && <Badge tone="neutral">unchanged — nothing happened</Badge>}
+        {notAttempted && <Badge tone="warning">not attempted — batch cancelled</Badge>}
         {file.status === 'failed' && <Badge tone="danger">needs attention</Badge>}
         {file.backup !== undefined && (
           <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline" title={file.backup.path}>
@@ -262,6 +300,15 @@ function FileRow({ file }: { file: WriteOutcome }) {
 
       {open && (
         <div className="border-t border-border bg-muted/30 px-3 py-2 text-xs">
+          {notAttempted && (
+            <div className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2">
+              <div className="text-sm font-semibold">This file was never attempted</div>
+              <p className="mt-1">
+                {notAttemptedReason ??
+                  'The batch was cancelled before this file was attempted; nothing was read from or written to it.'}
+              </p>
+            </div>
+          )}
           {explanation !== null && (
             <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
               <div className="text-sm font-semibold text-destructive">{explanation.title}</div>

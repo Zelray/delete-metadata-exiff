@@ -9,11 +9,11 @@
  * distinct current-date value) into one honest Results Report.
  */
 import { useState, type ReactNode } from 'react';
-import { confirmUndo, executeWrite } from '../api/client';
+import { cancelWriteBatch, confirmUndo, executeWrite } from '../api/client';
 import { SaveReviewModal, type PreviewGroup } from '../components/SaveReviewModal';
 import { useUiStore, type LastWrite } from '../state/store';
 import { navigate } from '../lib/router';
-import type { BatchOutcome, TagEdit, WriteOutcome } from './types';
+import type { BatchOutcome, BatchOutcomeWithCancel, TagEdit, WriteOutcome } from './types';
 
 export interface WriteRunConfig {
   title: string;
@@ -35,12 +35,32 @@ export interface WriteProgress {
   total: number;
 }
 
+/**
+ * Result of a graceful cancel request (POST /api/write/cancel). `requested`
+ * means the server accepted the flag (honored between chunks); `refused`
+ * means the batch had already finished — honestly reported, nothing changed.
+ */
+export interface CancelRequestState {
+  status: 'requested' | 'refused';
+  note: string;
+}
+
 export interface WriteRunner {
   busy: boolean;
   progress: WriteProgress | null;
   /** null when no error — views check `!== null`. */
   error: unknown;
   clearError: () => void;
+  /**
+   * The batch id of the write currently executing with {stream:true} — null
+   * whenever nothing is in flight. It is the cancel target: views may offer
+   * Cancel ONLY while this is set.
+   */
+  activeBatchId: string | null;
+  /** After a cancel request: what the server said (for the honest note). */
+  cancelState: CancelRequestState | null;
+  /** Request a graceful cancel of the in-flight batch. */
+  requestCancel: () => Promise<void>;
   /** Open the Save Review modal for these previews. */
   review: (groups: PreviewGroup[], config: WriteRunConfig) => void;
   cancelReview: () => void;
@@ -54,6 +74,8 @@ export function useWriteRunner(): WriteRunner {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<WriteProgress | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [cancelState, setCancelState] = useState<CancelRequestState | null>(null);
 
   const review = (next: PreviewGroup[], runConfig: WriteRunConfig): void => {
     setError(null);
@@ -71,6 +93,7 @@ export function useWriteRunner(): WriteRunner {
     if (groups === null || config === null || busy) return;
     setBusy(true);
     setError(null);
+    setCancelState(null);
     const setLastWrite = useUiStore.getState().setLastWrite;
     try {
       if (config.undoBatchId !== undefined) {
@@ -84,9 +107,15 @@ export function useWriteRunner(): WriteRunner {
         let consistencyNotes: string[] = [];
         for (const group of groups) {
           setProgress({ phase: 'starting', index: 0, total: group.preview.files.length });
+          setActiveBatchId(null);
           const result = await executeWrite(group.preview.previewId, {
             stream: true,
             onFrame: (frame) => {
+              // The first frame carries the batch id: from here until the
+              // stream ends, a graceful cancel is possible and offerable.
+              if (typeof frame.batchId === 'string' && frame.batchId.length > 0) {
+                setActiveBatchId(frame.batchId);
+              }
               if (frame.type === 'write-progress' && typeof frame.phase === 'string') {
                 setProgress({
                   phase: frame.phase,
@@ -113,6 +142,25 @@ export function useWriteRunner(): WriteRunner {
     } finally {
       setBusy(false);
       setProgress(null);
+      setActiveBatchId(null);
+    }
+  };
+
+  /**
+   * Graceful cancel of the in-flight batch (BatchPanel's Cancel button). The
+   * server honors the flag between chunks: the file being written finishes
+   * with its full verification, already-written files keep their verified
+   * backups, and the rest are reported as not attempted. A batch that already
+   * finished refuses with 404 — surfaced here as an honest note, not a crash.
+   */
+  const requestCancel = async (): Promise<void> => {
+    if (activeBatchId === null) return;
+    try {
+      const result = await cancelWriteBatch(activeBatchId);
+      setCancelState({ status: 'requested', note: result.note });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setCancelState({ status: 'refused', note: message });
     }
   };
 
@@ -130,10 +178,27 @@ export function useWriteRunner(): WriteRunner {
       />
     ) : null;
 
-  return { busy, progress, error, clearError: () => setError(null), review, cancelReview, modal };
+  return {
+    busy,
+    progress,
+    error,
+    clearError: () => setError(null),
+    activeBatchId,
+    cancelState,
+    requestCancel,
+    review,
+    cancelReview,
+    modal,
+  };
 }
 
-/** Merge per-group outcomes into one honest batch-level report. */
+/**
+ * Merge per-group outcomes into one honest batch-level report. The additive
+ * cancel fields (`cancelled` / `cancelledAt` / `notAttempted` /
+ * `notAttemptedFilePaths`) are carried across when any group's batch was
+ * cancelled, so the Results report can say plainly which files the batch
+ * never attempted.
+ */
 export function mergeOutcomes(outcomes: BatchOutcome[]): BatchOutcome {
   if (outcomes.length === 0) {
     // Unreachable via the server contract; kept total for typing honesty.
@@ -150,6 +215,10 @@ export function mergeOutcomes(outcomes: BatchOutcome[]): BatchOutcome {
     };
   }
   const files: WriteOutcome[] = outcomes.flatMap((o) => o.files);
+  const cancelledGroups = outcomes.filter((o) => (o as BatchOutcomeWithCancel).cancelled === true);
+  const notAttemptedPaths = cancelledGroups.flatMap(
+    (o) => (o as BatchOutcomeWithCancel).notAttemptedFilePaths ?? [],
+  );
   return {
     batchId: outcomes[0]?.batchId ?? 'none',
     startedAt: outcomes[0]?.startedAt ?? new Date().toISOString(),
@@ -166,6 +235,16 @@ export function mergeOutcomes(outcomes: BatchOutcome[]): BatchOutcome {
           (f.stage === undefined || f.stage === 'write' || f.stage === 'preflight' || f.stage === 'verify' || f.stage === 'unknown'),
       )
       .map((f) => f.filePath),
+    // Additive, present ONLY when a cancel actually happened (frozen
+    // BatchOutcome shape stays intact otherwise).
+    ...(cancelledGroups.length > 0
+      ? {
+          cancelled: true,
+          cancelledAt: (cancelledGroups[0] as BatchOutcomeWithCancel).cancelledAt,
+          notAttempted: notAttemptedPaths.length,
+          notAttemptedFilePaths: notAttemptedPaths,
+        }
+      : {}),
   };
 }
 
