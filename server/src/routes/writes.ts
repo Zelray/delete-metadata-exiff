@@ -6,10 +6,16 @@
  *   POST /api/session/unlock     unlock writing for this server session
  *   POST /api/session/lock       re-lock (back to the read-only default)
  *   POST /api/write/preview      {files, edits}          -> WritePreview
+ *                                 {files, destructive:{scope:"gps"}} -> GPS-strip preview
  *   POST /api/write/execute      {previewId}             -> BatchOutcome
- *                                 (optionally {"stream": true} -> SSE frames)
+ *                                 (optionally {"stream": true} -> SSE frames;
+ *                                  optionally {"destructive":{"confirmationPhrase"}}
+ *                                  for the GPS strip — server-gated)
+ *   POST /api/write/cancel       {batchId}               -> cooperative cancel flag
+ *                                 (honored between chunks; in-flight files finish)
  *   POST /api/write/undo         {batchId[, confirm]}    -> undo preview/result
  *   GET  /api/write/history                              -> journal history
+ *                                 (+ additive scrubId/exportedValuesPath)
  *   POST /api/scrub/preview      {files}                 -> AI-metadata report
  *   POST /api/scrub/execute      {files, confirm}        -> gated wipe
  *
@@ -44,7 +50,8 @@ import {
   type ExecuteOptions,
 } from '../services/writePipeline.js';
 import { ScrubService, SCRUB_CONFIRMATION_PHRASE } from '../services/scrub.js';
-import { Journal } from '../services/journal.js';
+import { GpsStripService, GPS_CONFIRMATION_PHRASE } from '../services/gpsStrip.js';
+import { Journal, type BatchStartRecord } from '../services/journal.js';
 import type { SseHub } from './events.js';
 import { sendError } from './api.js';
 
@@ -83,6 +90,8 @@ export interface WriteRouteDeps {
   hub?: SseHub;
   /** Provider used by the execute gate; defaults to the local session state. */
   sessionState?: WriteSessionState;
+  /** Files per execution chunk (default 200; test seam for cancel drills). */
+  chunkSize?: number;
 }
 
 const MAX_SCRUB_FILES = 1000;
@@ -98,11 +107,16 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           dataDir: deps.dataDir,
           journal,
           isWriteUnlocked: () => session.writeUnlocked,
+          ...(deps.chunkSize !== undefined ? { chunkSize: deps.chunkSize } : {}),
         })
       : null;
   const scrub =
     deps.engine !== null && pipeline !== null
       ? new ScrubService({ engine: deps.engine, pipeline, dataDir: deps.dataDir })
+      : null;
+  const gpsStrip =
+    deps.engine !== null && pipeline !== null
+      ? new GpsStripService({ engine: deps.engine, pipeline, dataDir: deps.dataDir })
       : null;
 
   // The always-visible mode: every /api/health response gains the additive
@@ -143,10 +157,44 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
   app.post(
     '/api/write/preview',
     async (request: FastifyRequest<{ Body: PreviewBody }>, reply: FastifyReply) => {
-      if (pipeline === null) {
+      if (pipeline === null || gpsStrip === null) {
         return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
       }
       const body = request.body ?? {};
+
+      // Destructive channel: ONLY the GPS strip is accepted here, with the
+      // server's own curated whitelist — the client declares intent, never a
+      // tag list. Edits are rejected on this path (the strip's delete list is
+      // fixed), and the mandatory pre-write export is produced NOW so the
+      // preview cannot be executed without it.
+      if (body.destructive !== undefined) {
+        const scopeError = validateGpsDestructiveBody(body);
+        if (scopeError !== null) {
+          return sendError(reply, 400, 'bad_request', scopeError);
+        }
+        const files = parseFilesBody(body);
+        if (typeof files === 'string') return sendError(reply, 400, 'bad_request', files);
+        try {
+          const strip = await gpsStrip.preview(files);
+          return reply.code(200).send({
+            preview: strip.envelope.preview,
+            commandPreview: strip.envelope.commandPreview,
+            diffNotes: strip.envelope.diffNotes,
+            writeUnlocked: session.writeUnlocked,
+            destructive: {
+              scope: 'gps',
+              requiresTypedConfirmation: true,
+              confirmationPhrase: GPS_CONFIRMATION_PHRASE,
+            },
+            gpsStripId: strip.gpsStripId,
+            exportedValuesPath: strip.exportedValuesPath,
+            notRemoved: strip.notRemoved,
+          });
+        } catch (error) {
+          return writeError(reply, error);
+        }
+      }
+
       const parsed = parseEditsBody(body);
       if (typeof parsed === 'string') {
         return sendError(reply, 400, 'bad_request', parsed);
@@ -179,6 +227,18 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       if (typeof body.previewId !== 'string' || body.previewId.length === 0) {
         return sendError(reply, 400, 'bad_request', 'The body must include {"previewId": string}.');
       }
+      const confirmationPhrase = parseConfirmationPhrase(body);
+      if (confirmationPhrase === null) {
+        return sendError(
+          reply,
+          400,
+          'bad_request',
+          'The destructive field, when present, must be {"destructive": {"confirmationPhrase": string}}.',
+        );
+      }
+      const executeOptions: ExecuteOptions = {
+        ...(confirmationPhrase !== undefined ? { destructive: { confirmationPhrase } } : {}),
+      };
 
       if (body.stream === true) {
         // Stream progress as SSE-shaped frames on this response (shared
@@ -200,10 +260,21 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           }
         };
         const progressOptions: ExecuteOptions = {
+          ...executeOptions,
           onProgress: (event) => send('write-progress', { ...event }),
         };
         try {
           const result = await pipeline.execute(body.previewId, progressOptions);
+          // A cancelled batch reports its cancellation as its own additive
+          // frame before the completion payload (clients ignore unknown types).
+          if ((result.outcome as { cancelled?: boolean }).cancelled === true) {
+            send('batch-cancelled', {
+              batchId: result.outcome.batchId,
+              cancelledAt: (result.outcome as { cancelledAt?: string }).cancelledAt,
+              notAttemptedFilePaths: (result.outcome as { notAttemptedFilePaths?: string[] })
+                .notAttemptedFilePaths,
+            });
+          }
           send('batch-complete', {
             batchId: result.outcome.batchId,
             outcome: result.outcome,
@@ -223,7 +294,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       }
 
       try {
-        const result = await pipeline.execute(body.previewId);
+        const result = await pipeline.execute(body.previewId, executeOptions);
         return reply.code(200).send({
           outcome: result.outcome,
           commandPreview: result.commandPreview,
@@ -233,6 +304,31 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       } catch (error) {
         return writeError(reply, error);
       }
+    },
+  );
+
+  // ---- graceful batch cancel ---------------------------------------------------
+
+  app.post(
+    '/api/write/cancel',
+    async (request: FastifyRequest<{ Body: CancelBody }>, reply: FastifyReply) => {
+      if (pipeline === null) {
+        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+      }
+      const body = request.body ?? {};
+      if (typeof body.batchId !== 'string' || body.batchId.length === 0) {
+        return sendError(reply, 400, 'bad_request', 'The body must include {"batchId": string}.');
+      }
+      const result = pipeline.requestCancel(body.batchId);
+      if (!result.requested) {
+        return sendError(reply, 404, 'not_found', result.note);
+      }
+      return reply.code(200).send({
+        batchId: body.batchId,
+        cancelRequested: true,
+        note: result.note,
+        commandPreview: [],
+      });
     },
   );
 
@@ -292,6 +388,16 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       for (const batchId of batchIds) {
         const history = await journal.batchHistory(batchId);
         if (history === null) continue;
+        // Additive history fields (leaf 1.1.4b): destructive flows carry the
+        // scrub/strip id and the pre-write sidecar export path on their
+        // batch-start record, restated here for the History view.
+        const { records } = await journal.readBatch(batchId);
+        const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start');
+        const extras: Record<string, unknown> = {};
+        if (start?.scrubId !== undefined) extras['scrubId'] = start.scrubId;
+        if (start?.destructive?.exportPath !== undefined) {
+          extras['exportedValuesPath'] = start.destructive.exportPath;
+        }
         // Verified chips: each backup is hashed against the journal record now.
         const backups = [];
         for (const outcome of history.outcomes) {
@@ -299,7 +405,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           const verification = await journal.verifyBackup(outcome.backup);
           backups.push({ filePath: outcome.filePath, backup: outcome.backup, verified: verification.verified });
         }
-        batches.push({ ...history, backups });
+        batches.push({ ...history, ...extras, backups });
       }
       return reply.code(200).send({
         batches,
@@ -392,10 +498,15 @@ interface PreviewBody {
   files?: unknown;
   edits?: unknown;
   timezone?: unknown;
+  destructive?: unknown;
 }
 interface ExecuteBody {
   previewId?: unknown;
   stream?: unknown;
+  destructive?: unknown;
+}
+interface CancelBody {
+  batchId?: unknown;
 }
 interface UndoBody {
   batchId?: unknown;
@@ -408,6 +519,58 @@ interface ScrubPreviewBody {
 interface ScrubExecuteBody {
   files?: unknown;
   confirm?: unknown;
+}
+
+// ---- GPS destructive-channel body helpers -------------------------------------
+
+/**
+ * Validate the destructive field on the generic preview channel. ONLY the GPS
+ * strip is accepted, the client declares scope but never a tag list (the
+ * whitelist is server-curated), and explicit edits are refused — the strip's
+ * delete list is fixed. Returns an error message or null.
+ */
+function validateGpsDestructiveBody(body: PreviewBody): string | null {
+  const destructive = body.destructive as Record<string, unknown> | null;
+  if (typeof destructive !== 'object' || destructive === null || Array.isArray(destructive)) {
+    return 'The destructive field must be an object: {"destructive": {"scope": "gps"}}.';
+  }
+  if (destructive['scope'] !== 'gps') {
+    return 'Only {"destructive": {"scope": "gps"}} is accepted on this channel; other destructive flows have their own routes.';
+  }
+  const extraKeys = Object.keys(destructive).filter((key) => key !== 'scope');
+  if (extraKeys.length > 0) {
+    return `The GPS destructive preview takes only {"scope": "gps"} (unexpected: ${extraKeys.join(', ')}).`;
+  }
+  if (Array.isArray(body.edits) && body.edits.length > 0) {
+    return 'Omit "edits" on a GPS-strip preview: the delete list is the engine-approved GPS tag set, applied to every selected file.';
+  }
+  return null;
+}
+
+/** Validate and return the {files} body; returns a message on any problem. */
+function parseFilesBody(body: PreviewBody): string[] | string {
+  if (!Array.isArray(body.files) || body.files.some((f) => typeof f !== 'string')) {
+    return 'The body must be {"files": string[]}.';
+  }
+  if (body.files.length === 0) return 'At least one file is required.';
+  return body.files as string[];
+}
+
+/**
+ * The execute request's typed phrase, or null on a malformed destructive
+ * field, or undefined when no destructive confirmation was sent.
+ */
+function parseConfirmationPhrase(body: ExecuteBody): string | undefined | null {
+  if (body.destructive === undefined) return undefined;
+  const destructive = body.destructive as Record<string, unknown> | null;
+  if (
+    typeof destructive !== 'object' ||
+    destructive === null ||
+    typeof destructive['confirmationPhrase'] !== 'string'
+  ) {
+    return null;
+  }
+  return destructive['confirmationPhrase'];
 }
 
 /** Validate the {files, edits} body; returns a message on any problem. */

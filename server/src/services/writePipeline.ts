@@ -52,10 +52,11 @@ import {
   buildJsonReadArgs,
   buildWriteArgs,
   isValidTagShape,
+  toValueSlot,
 } from '../engine/argBuilder.js';
 import { assertArgsSafe } from '../engine/engineArgs.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
-import { newRecordId, sha256File, Journal } from './journal.js';
+import { newRecordId, sha256File, Journal, type BatchStartRecord } from './journal.js';
 import { findForeignTempFiles, WriteLock } from './lock.js';
 import {
   classifyFiles,
@@ -120,6 +121,37 @@ export interface DestructiveSpec {
   exportPath?: string;
 }
 
+/**
+ * Additive per-file outcome fields for a file a CANCELLED batch never
+ * attempted. The shared `WriteOutcomeStatus` stays three-valued (frozen
+ * contract), so the fourth honest state is carried by these flags:
+ * `status: 'unchanged'` is literally true — nothing on disk changed — and
+ * `notAttempted` makes "the batch never touched this file" explicit instead
+ * of implied.
+ */
+export interface NotAttemptedOutcomeFields {
+  notAttempted: true;
+  notAttemptedReason: string;
+}
+
+export type WriteOutcomeWithNotAttempted = WriteOutcome & NotAttemptedOutcomeFields;
+
+/**
+ * Additive batch-level fields present ONLY on cancelled batches (the shared
+ * `BatchOutcome` shape is frozen; these are additive optional members of the
+ * JSON payload). `unchanged` in the counts includes the not-attempted files so
+ * `updated + unchanged + failed === files.length` keeps holding.
+ */
+export interface CancelledBatchOutcomeFields {
+  cancelled: true;
+  cancelledAt: string;
+  notAttempted: number;
+  /** The unprocessed files — a retry preview covers exactly these. */
+  notAttemptedFilePaths: string[];
+}
+
+export type CancelledBatchOutcome = BatchOutcome & CancelledBatchOutcomeFields;
+
 export interface PreviewRequest {
   files: readonly string[];
   edits: readonly TagEdit[];
@@ -127,6 +159,14 @@ export interface PreviewRequest {
   mode?: string;
   description?: string;
   destructive?: { scope: ScrubScope; confirmationPhrase: string; allowedDeleteTags: readonly string[] };
+  /**
+   * Journal-sourced RESTORE spec (internal undo path only): allows `set`
+   * restores of tags the destructive flow deleted, validated against the tags
+   * of the ORIGINAL batch's own edit list. Routes never accept this from
+   * callers — the only producer is `undoBatch`/`prepareUndo` reading the
+   * journal, so no user-supplied tag can reach this path.
+   */
+  restore?: { allowedTags: readonly string[] };
   /** Explicit timezone decision for date-shift edits (requirement #13). */
   timezone?: string;
   undoOfBatchId?: string;
@@ -187,6 +227,8 @@ interface StoredPreview {
   preOriginalSha256: Map<string, string>;
   fileWarnings: Map<string, string[]>;
   destructive: DestructiveSpec | null;
+  /** Restore whitelist when this preview is a journal-sourced undo restore. */
+  restoreTags: readonly string[] | null;
   mode: string;
   description: string;
   timezone?: string;
@@ -255,6 +297,10 @@ export class WritePipeline {
   private readonly isWriteUnlocked: () => boolean;
   private readonly previewTtlMs: number;
   private readonly previews = new Map<string, StoredPreview>();
+  /** Batch ids currently executing (cancel targets). */
+  private readonly activeBatches = new Set<string>();
+  /** Cooperative cancel requests, honored BETWEEN chunks only. */
+  private readonly cancelFlags = new Set<string>();
 
   constructor(options: WritePipelineOptions) {
     this.engine = options.engine;
@@ -293,11 +339,15 @@ export class WritePipeline {
 
     // The whitelist/value grammar gate runs here, on the edit list, exactly as
     // it will run at execute time — same builder, same rejections. Destructive
-    // flows use the bare-delete path with their own compile-time whitelist.
+    // flows use the bare-delete path with their own compile-time whitelist;
+    // journal-sourced undo restores use the restore path (set + delete against
+    // the original batch's own tag list).
     const editArgv =
-      request.destructive !== undefined
-        ? buildDestructiveDeleteArgs(request.edits, request.destructive.allowedDeleteTags)
-        : buildWriteArgs([files[0] as string], request.edits).slice(0, -1);
+      request.restore !== undefined
+        ? buildDestructiveRestoreArgs(request.edits, request.restore.allowedTags)
+        : request.destructive !== undefined
+          ? buildDestructiveDeleteArgs(request.edits, request.destructive.allowedDeleteTags)
+          : buildWriteArgs([files[0] as string], request.edits).slice(0, -1);
     const affectedTags = [...new Set(request.edits.map((e) => e.tag))];
 
     const previewId = newRecordId('pv');
@@ -497,6 +547,7 @@ export class WritePipeline {
             allowedDeleteTags: [...request.destructive.allowedDeleteTags],
           }
         : null,
+      restoreTags: request.restore !== undefined ? [...request.restore.allowedTags] : null,
       mode: request.mode ?? 'edit',
       description: request.description ?? `Write ${request.edits.length} edit(s) to ${files.length} file(s)`,
       ...(request.timezone !== undefined ? { timezone: request.timezone } : {}),
@@ -577,6 +628,11 @@ export class WritePipeline {
         'This preview is not a destructive flow; no confirmation is required (or accepted).',
       );
     }
+    if (stored.restoreTags !== null) {
+      // Defense in depth: re-validate the restore edits against the original
+      // destructive batch's tag list at execute time, exactly as at preview.
+      buildDestructiveRestoreArgs(stored.edits, stored.restoreTags);
+    }
 
     const batchId = newRecordId('wb');
     const startedAt = new Date().toISOString();
@@ -586,6 +642,10 @@ export class WritePipeline {
         reason: error instanceof Error ? (error as Error & { code?: string }).code ?? null : null,
       });
     });
+    this.activeBatches.add(batchId);
+    // A cancel request left over from an earlier batch with a colliding id
+    // cannot exist (ids are unique), but clear defensively on entry.
+    this.cancelFlags.delete(batchId);
 
     const outcomes: WriteOutcome[] = [];
     const total = stored.files.length;
@@ -633,7 +693,19 @@ export class WritePipeline {
       }
       onProgress({ batchId, phase: 'intent', index: 0, total });
 
+      let cancelRequested = false;
+      let cancelledAt: string | undefined;
+
       for (let i = 0; i < stored.chunks.length; i += 1) {
+        // Cooperative cancel (POST /api/write/cancel): honored only BETWEEN
+        // chunks. An in-flight chunk always finishes — exiftool is never
+        // interrupted mid-file, so every written file keeps a full, verified
+        // result and no file is ever left half-written by a cancel.
+        if (this.cancelFlags.has(batchId)) {
+          cancelRequested = true;
+          cancelledAt = new Date().toISOString();
+          break;
+        }
         const chunk = stored.chunks[i] as string[];
         const mErr = path.join(stored.manifestDir, `chunk${i}-err.txt`);
         const mSame = path.join(stored.manifestDir, `chunk${i}-same.txt`);
@@ -796,6 +868,28 @@ export class WritePipeline {
         });
       }
 
+      // Cancelled batches: every unprocessed file gets an explicit, honest
+      // not-attempted result (journal-recorded like any other outcome) — the
+      // three-valued status stays intact via `status: 'unchanged'` (nothing on
+      // disk changed) with the additive notAttempted flags carrying the state.
+      if (cancelRequested) {
+        const attempted = new Set(outcomes.map((o) => normalizeExifPath(o.filePath)));
+        for (const filePath of stored.files) {
+          if (attempted.has(normalizeExifPath(filePath))) continue;
+          const outcome: WriteOutcomeWithNotAttempted = {
+            filePath,
+            status: 'unchanged',
+            warnings: [],
+            errors: [],
+            notAttempted: true,
+            notAttemptedReason:
+              'The batch was cancelled before this file was attempted. Nothing was read from or written to it; preview again to include it.',
+          };
+          outcomes.push(outcome);
+          await this.journal.recordResult({ batchId, filePath, outcome });
+        }
+      }
+
       const counts = {
         updated: outcomes.filter((o) => o.status === 'updated').length,
         unchanged: outcomes.filter((o) => o.status === 'unchanged').length,
@@ -803,24 +897,65 @@ export class WritePipeline {
       };
       const allVerified =
         outcomes.length > 0 && outcomes.every((o) => o.status === 'updated' && o.verified === true);
-      const outcome: BatchOutcome = {
+      const notAttemptedFiles = cancelRequested
+        ? outcomes
+            .filter((o): o is WriteOutcomeWithNotAttempted => (o as WriteOutcomeWithNotAttempted).notAttempted === true)
+            .map((o) => o.filePath)
+        : [];
+      const finishedAt = new Date().toISOString();
+      const base: BatchOutcome = {
         batchId,
         startedAt,
-        finishedAt: new Date().toISOString(),
+        finishedAt,
         files: outcomes,
         ...counts,
         allVerified,
         retryFilePaths: retryList(outcomes),
       };
+      let outcome = base;
+      if (cancelRequested) {
+        const cancelledOutcome: CancelledBatchOutcome = {
+          ...base,
+          cancelled: true,
+          cancelledAt: cancelledAt as string,
+          notAttempted: notAttemptedFiles.length,
+          notAttemptedFilePaths: notAttemptedFiles,
+        };
+        outcome = cancelledOutcome;
+      }
       await this.journal.recordBatchEnd({ batchId, summary: { ...counts, allVerified } });
       onProgress({ batchId, phase: 'done', index: total, total });
 
       this.previews.delete(previewId);
       return { outcome, commandPreview: stored.commandPreview, consistencyNotes };
     } finally {
+      this.activeBatches.delete(batchId);
+      this.cancelFlags.delete(batchId);
       await rm(stored.manifestDir, { recursive: true, force: true }).catch(() => undefined);
       await release.release();
     }
+  }
+
+  // ---- cancel ---------------------------------------------------------------
+
+  /**
+   * Request a cooperative cancel of a running batch. The flag is honored only
+   * BETWEEN chunks: the in-flight chunk always finishes (exiftool is never
+   * interrupted mid-file), already-written files keep their verified results,
+   * and unprocessed files are reported as not attempted.
+   */
+  requestCancel(batchId: string): { requested: boolean; note: string } {
+    if (!this.activeBatches.has(batchId)) {
+      return {
+        requested: false,
+        note: 'No write batch with this id is running right now (it may already have finished, or the id is wrong). Nothing was cancelled and nothing was changed.',
+      };
+    }
+    this.cancelFlags.add(batchId);
+    return {
+      requested: true,
+      note: 'Cancel requested. The file currently being written finishes safely with its full verification; the remaining files are not attempted.',
+    };
   }
 
   // ---- undo -----------------------------------------------------------------
@@ -836,7 +971,7 @@ export class WritePipeline {
     batchId: string,
     options: ExecuteOptions = {},
   ): Promise<{ results: ExecuteResult[]; previews: WritePreview[] }> {
-    const plan = await this.prepareUndoPlan(batchId);
+    const { plan, start } = await this.prepareUndoPlan(batchId);
     const groups = groupByEditSet(plan);
     const results: ExecuteResult[] = [];
     const previews: WritePreview[] = [];
@@ -847,6 +982,7 @@ export class WritePipeline {
         mode: 'undo',
         description: `Undo batch ${batchId}`,
         undoOfBatchId: batchId,
+        ...(start?.destructive !== undefined ? { restore: { allowedTags: destructiveBatchTags(start) } } : {}),
       });
       previews.push(envelope.preview);
       results.push(await this.execute(envelope.preview.previewId, options));
@@ -859,7 +995,7 @@ export class WritePipeline {
    * shows before the user confirms). Throws the same errors as `undoBatch`.
    */
   async prepareUndo(batchId: string): Promise<PreviewEnvelope> {
-    const plan = await this.prepareUndoPlan(batchId);
+    const { plan, start } = await this.prepareUndoPlan(batchId);
     const groups = groupByEditSet(plan);
     const first = groups[0];
     if (first === undefined) {
@@ -871,12 +1007,14 @@ export class WritePipeline {
       mode: 'undo',
       description: `Undo batch ${batchId}`,
       undoOfBatchId: batchId,
+      ...(start?.destructive !== undefined ? { restore: { allowedTags: destructiveBatchTags(start) } } : {}),
     });
   }
 
-  private async prepareUndoPlan(batchId: string): Promise<
-    Array<{ filePath: string; edits: TagEdit[] }>
-  > {
+  private async prepareUndoPlan(batchId: string): Promise<{
+    plan: Array<{ filePath: string; edits: TagEdit[] }>;
+    start: BatchStartRecord | null;
+  }> {
     const { records } = await this.journal.readBatch(batchId);
     if (records.length === 0) {
       throw new WritePipelineError('undo_unavailable', `No journal records exist for batch "${batchId}".`);
@@ -896,7 +1034,25 @@ export class WritePipeline {
         'This batch has no files that can be undone (nothing was updated, or no before-values were recorded).',
       );
     }
-    return plan;
+    const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start') ?? null;
+    // A destructive batch's reverse edits may restore tags OUTSIDE the curated
+    // human-fields whitelist (GPS strips especially). They ride the
+    // journal-sourced restore path: tags restricted to the original batch's
+    // own validated edit list, values sourced from journal before-values.
+    if (start?.destructive !== undefined) {
+      const allowed = new Set(destructiveBatchTags(start).map((t) => t.toLowerCase()));
+      const stray = plan
+        .flatMap((entry) => entry.edits.map((edit) => edit.tag))
+        .find((tag) => !allowed.has(tag.toLowerCase()));
+      if (stray !== undefined) {
+        throw new WritePipelineError(
+          'undo_unavailable',
+          `The journal for this destructive batch contains a record for "${stray}", which was not part of the batch's approved edit list. Undo is refused; run the recovery scan instead.`,
+          { tag: stray },
+        );
+      }
+    }
+    return { plan, start };
   }
 
   /** Find a completed batch that undid the given batch, if any. */
@@ -1112,6 +1268,70 @@ export function buildDestructiveDeleteArgs(
   assertNoOverwriteArgs(argv);
   assertArgsSafe(argv);
   return argv;
+}
+
+/**
+ * The journal-sourced RESTORE builder for undoing a destructive batch: `set`
+ * restores (`-GROUP:Tag=value`, values straight from journal before-values)
+ * plus bare deletes for anything the batch created. Every tag must appear in
+ * the ORIGINAL batch's own edit list, so the restore path can never write a
+ * tag the destructive flow was not approved for. Routes never accept this
+ * shape from callers — only `undoBatch`/`prepareUndo` produce it, from the
+ * journal.
+ */
+export function buildDestructiveRestoreArgs(
+  edits: readonly TagEdit[],
+  allowedTags: readonly string[],
+): string[] {
+  if (edits.length === 0) {
+    throw new WritePipelineError('validation', 'A restore needs at least one edit.');
+  }
+  const allowed = new Set(allowedTags.map((t) => t.toLowerCase()));
+  const argv: string[] = [];
+  for (const edit of edits) {
+    if (!isValidTagShape(edit.tag)) {
+      throw new WritePipelineError('validation', `"${edit.tag}" is not a valid tag name.`, {
+        tag: edit.tag,
+      });
+    }
+    if (!allowed.has(edit.tag.toLowerCase())) {
+      throw new WritePipelineError(
+        'validation',
+        `"${edit.tag}" was not part of the original batch's approved edit list, so it cannot be restored.`,
+        { tag: edit.tag },
+      );
+    }
+    if (edit.op === 'delete') {
+      if (edit.value !== undefined && edit.value.length > 0) {
+        throw new WritePipelineError('validation', 'A delete edit takes no value.', { tag: edit.tag });
+      }
+      argv.push(`-${edit.tag}=`);
+    } else if (edit.op === 'set') {
+      const value = edit.value ?? '';
+      if (value.length === 0) {
+        throw new WritePipelineError(
+          'validation',
+          `"${edit.tag}" needs a before-value to restore; the journal record is incomplete.`,
+          { tag: edit.tag },
+        );
+      }
+      argv.push(`-${edit.tag}=${toValueSlot(value)}`);
+    } else {
+      throw new WritePipelineError(
+        'validation',
+        'Restores may only set or delete tags.',
+        { tag: edit.tag, op: edit.op },
+      );
+    }
+  }
+  assertNoOverwriteArgs(argv);
+  assertArgsSafe(argv);
+  return argv;
+}
+
+/** The approved tag list of a destructive batch, from its batch-start record. */
+function destructiveBatchTags(start: BatchStartRecord): string[] {
+  return [...new Set(start.edits.map((edit) => edit.tag))];
 }
 
 /**

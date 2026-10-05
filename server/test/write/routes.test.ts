@@ -7,14 +7,23 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { InjectOptions, InjectPayload } from 'light-my-request';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { registerHealthRoute } from '../../src/routes/api.js';
 import { registerWriteRoutes } from '../../src/routes/writes.js';
 import { registerRecoveryRoutes } from '../../src/routes/recovery.js';
-import { makePipeline, makeWriteFixture, writeSdMetadata, type PipelineHarness, type WriteFixture } from './helpers.js';
+import {
+  makePipeline,
+  makeWriteFixture,
+  readTagsOnce,
+  writeGpsMetadata,
+  writeSdMetadata,
+  type PipelineHarness,
+  type WriteFixture,
+} from './helpers.js';
 import { PNG_1X1 } from '../helpers.js';
 import { SCRUB_CONFIRMATION_PHRASE } from '../../src/services/scrub.js';
+import { GPS_CONFIRMATION_PHRASE } from '../../src/services/gpsStrip.js';
 
 let fixture: WriteFixture;
 let harness: PipelineHarness;
@@ -53,7 +62,7 @@ beforeAll(async () => {
       setHealth: () => undefined,
     } as never,
   });
-  registerWriteRoutes(app, { engine: harness.session, dataDir: fixture.dataDir });
+  registerWriteRoutes(app, { engine: harness.session, dataDir: fixture.dataDir, chunkSize: 1 });
   registerRecoveryRoutes(app, { dataDir: fixture.dataDir });
   await app.ready();
 }, 60_000);
@@ -300,5 +309,231 @@ describe('recovery routes', () => {
     const badPath = await inject('/api/recovery/scan?folders=relative%5Cpath');
     expect(badPath.statusCode).toBe(400);
     expect(badPath.body.code).toBe('path_rejected');
+  });
+});
+
+describe('GPS destructive channel on the generic write routes', () => {
+  it('previews the strip, refuses the wrong phrase, executes behind the phrase, and shows the sidecar + strip id in history', async () => {
+    const png = await fixture.put('routes-gps.png');
+    await writeGpsMetadata(png);
+    await inject('/api/session/unlock', { method: 'POST', body: {} });
+
+    const preview = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], destructive: { scope: 'gps' } },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body.destructive).toEqual({
+      scope: 'gps',
+      requiresTypedConfirmation: true,
+      confirmationPhrase: GPS_CONFIRMATION_PHRASE,
+    });
+    expect(preview.body.gpsStripId).toMatch(/^gs_/);
+    expect(preview.body.exportedValuesPath).toMatch(/journal[\\/]exports/);
+    const deleteDiffs = preview.body.preview.files[0].diffs.filter(
+      (d: { kind: string }) => d.kind === 'delete',
+    );
+    expect(deleteDiffs.length).toBeGreaterThanOrEqual(15);
+    expect(
+      deleteDiffs.some(
+        (d: { tag: string; before?: string }) =>
+          d.tag === 'EXIF:GPSLatitude' && typeof d.before === 'string' && d.before.length > 0,
+      ),
+    ).toBe(true);
+
+    // The wrong phrase is refused server-side; so is a missing one.
+    const wrongPhrase = await inject('/api/write/execute', {
+      method: 'POST',
+      body: { previewId: preview.body.preview.previewId, destructive: { confirmationPhrase: 'strip it' } },
+    });
+    expect(wrongPhrase.statusCode).toBe(403);
+    expect(wrongPhrase.body.message).toMatch(/REMOVE GPS DATA/);
+    const noPhrase = await inject('/api/write/execute', {
+      method: 'POST',
+      body: { previewId: preview.body.preview.previewId },
+    });
+    expect(noPhrase.statusCode).toBe(403);
+    expect(noPhrase.body.code).toBe('unsafe_tag');
+
+    const executed = await inject('/api/write/execute', {
+      method: 'POST',
+      body: {
+        previewId: preview.body.preview.previewId,
+        destructive: { confirmationPhrase: GPS_CONFIRMATION_PHRASE },
+      },
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.body.outcome.files[0]?.status).toBe('updated');
+    expect(executed.body.outcome.files[0]?.verified).toBe(true);
+
+    const after = await readTagsOnce(png, []);
+    expect(Object.keys(after).filter((k) => /gps/i.test(k) && k !== 'SourceFile')).toEqual([]);
+
+    // History carries the additive fields (mode, strip id, sidecar path).
+    const history = await inject('/api/write/history');
+    const entry = history.body.batches.find(
+      (b: { batchId: string }) => b.batchId === executed.body.outcome.batchId,
+    );
+    expect(entry).toBeDefined();
+    expect(entry.mode).toBe('gps-strip');
+    expect(entry.scrubId).toBe(preview.body.gpsStripId);
+    expect(entry.exportedValuesPath).toBe(preview.body.exportedValuesPath);
+  });
+
+  it('rejects other scopes, client-supplied tag lists, malformed bodies, and phrases on plain previews', async () => {
+    const png = await fixture.put('routes-gps-guard.png');
+    const wrongScope = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], destructive: { scope: 'ai-generation-metadata' } },
+    });
+    expect(wrongScope.statusCode).toBe(400);
+    const withEdits = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], destructive: { scope: 'gps' }, edits: [{ tag: 'EXIF:GPSLatitude', op: 'delete' }] },
+    });
+    expect(withEdits.statusCode).toBe(400);
+    const extraField = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], destructive: { scope: 'gps', allowedDeleteTags: ['EXIF:GPSLatitude'] } },
+    });
+    expect(extraField.statusCode).toBe(400);
+    const malformed = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], destructive: 'gps' },
+    });
+    expect(malformed.statusCode).toBe(400);
+
+    // A destructive phrase on a NON-destructive preview is refused (nothing to
+    // confirm), and execute refuses a destructive field on a plain preview too.
+    const plain = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'plain' }] },
+    });
+    expect(plain.statusCode).toBe(200);
+    const phraseOnPlain = await inject('/api/write/execute', {
+      method: 'POST',
+      body: {
+        previewId: plain.body.preview.previewId,
+        destructive: { confirmationPhrase: GPS_CONFIRMATION_PHRASE },
+      },
+    });
+    expect(phraseOnPlain.statusCode).toBe(400);
+  });
+
+  it('refuses RAW files on the GPS channel', async () => {
+    const raw = await fixture.put('routes-gps.nef');
+    const res = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [raw], destructive: { scope: 'gps' } },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toMatch(/RAW/i);
+  });
+});
+
+describe('graceful batch cancel route', () => {
+  it('refuses unknown and malformed cancel requests', async () => {
+    const missing = await inject('/api/write/cancel', { method: 'POST', body: {} });
+    expect(missing.statusCode).toBe(400);
+    const unknown = await inject('/api/write/cancel', {
+      method: 'POST',
+      body: { batchId: 'wb_nope' },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.body.code).toBe('not_found');
+  });
+
+  it('cancels a running streamed batch between chunks (in-flight file finishes, the rest are not attempted)', async () => {
+    await inject('/api/session/unlock', { method: 'POST', body: {} });
+    const paths = [
+      await fixture.put('cancel-route-1.png'),
+      await fixture.put('cancel-route-2.png'),
+      await fixture.put('cancel-route-3.png'),
+    ];
+    const preview = await inject('/api/write/preview', {
+      method: 'POST',
+      body: {
+        files: paths,
+        edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'cancel via route' }],
+      },
+    });
+    expect(preview.statusCode).toBe(200);
+
+    const batchesDir = path.join(fixture.dataDir, 'journal', 'batches');
+    const baseline = (await readdir(batchesDir).catch(() => [] as string[])).length;
+    const execPromise = app.inject({
+      url: '/api/write/execute',
+      method: 'POST',
+      headers: { 'x-metadesk-token': TOKEN, host: '127.0.0.1' },
+      payload: { previewId: preview.body.preview.previewId, stream: true },
+    });
+
+    // Learn the batchId from the journal (batch-start lands before any chunk).
+    let batchId: string | null = null;
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const names = await readdir(batchesDir).catch(() => [] as string[]);
+      if (names.length > baseline) {
+        batchId = (names[names.length - 1] ?? '').replace(/\.jsonl$/, '');
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    expect(batchId).not.toBeNull();
+
+    const cancel = await inject('/api/write/cancel', { method: 'POST', body: { batchId } });
+
+    const response = await execPromise;
+    expect(response.statusCode).toBe(200);
+    const completeLine = response.body
+      .split('\n')
+      .find((l) => l.startsWith('data: ') && l.includes('"batch-complete"'));
+    expect(completeLine).toBeDefined();
+    const frame = JSON.parse((completeLine as string).slice('data: '.length)) as {
+      outcome: {
+        files: Array<{ filePath: string; status: string; verified?: boolean }>;
+        updated: number;
+        cancelled?: boolean;
+        notAttemptedFilePaths?: string[];
+      };
+    };
+
+    if (cancel.statusCode === 200) {
+      expect(cancel.body.cancelRequested).toBe(true);
+      expect(frame.outcome.cancelled).toBe(true);
+      expect(Array.isArray(frame.outcome.notAttemptedFilePaths)).toBe(true);
+      // Every file is EITHER fully verified or explicitly not attempted — no
+      // half-written third state.
+      for (const file of frame.outcome.files) {
+        const notAttempted = frame.outcome.notAttemptedFilePaths?.includes(file.filePath);
+        if (notAttempted === true) {
+          expect(file.status).toBe('unchanged');
+        } else {
+          expect(file.status).toBe('updated');
+          expect(file.verified).toBe(true);
+        }
+      }
+      // The cancellation was reported on its own stream frame too.
+      expect(response.body).toContain('event: batch-cancelled');
+    } else {
+      // The batch finished before the cancel landed — the flag is refused
+      // honestly and the batch ran to completion.
+      expect(cancel.statusCode).toBe(404);
+      expect(frame.outcome.cancelled).toBeUndefined();
+      expect(frame.outcome.updated).toBe(3);
+    }
+
+    // Journal reconciled either way: every intent has a result.
+    if (batchId !== null) {
+      const { readFile: readJ } = await import('node:fs/promises');
+      const raw = await readJ(path.join(batchesDir, `${batchId as string}.jsonl`), 'utf8');
+      const kinds = raw
+        .split('\n')
+        .filter((l) => l.trim().length > 0)
+        .map((l) => (JSON.parse(l) as { kind: string }).kind);
+      expect(kinds.filter((k) => k === 'intent').length).toBe(3);
+      expect(kinds.filter((k) => k === 'result').length).toBe(3);
+      expect(kinds).toContain('batch-end');
+    }
   });
 });

@@ -138,6 +138,46 @@ export async function writeSdMetadata(pngPath: string): Promise<void> {
 }
 
 /**
+ * Write a full phone-style GPS set onto a file the way a camera/phone does
+ * (EXIF GPS block + a few XMP-exif GPS twins), applied with exiftool itself.
+ * Runs in the engine's default backup mode — like writeSdMetadata, so the
+ * fixture carries a first-generation `_original` of the pristine bytes.
+ */
+export async function writeGpsMetadata(pngPath: string): Promise<void> {
+  const result = await runOnce(
+    EXE_PATH,
+    [
+      '-GPS:GPSVersionID=2.3.0.0',
+      '-GPS:GPSLatitudeRef=N',
+      '-GPS:GPSLatitude=38.521',
+      '-GPS:GPSLongitudeRef=W',
+      '-GPS:GPSLongitude=-121.521',
+      '-GPS:GPSAltitudeRef=0',
+      '-GPS:GPSAltitude=12.5',
+      '-GPS:GPSTimeStamp=12:34:56',
+      '-GPS:GPSDateStamp=2026:10:05',
+      '-GPS:GPSSatellites=8',
+      '-GPS:GPSDOP=2.5',
+      '-GPS:GPSSpeed=5.2',
+      '-GPS:GPSTrack=180.5',
+      '-GPS:GPSImgDirection=90.0',
+      '-GPS:GPSImgDirectionRef=M',
+      '-GPS:GPSMapDatum=WGS-84',
+      '-GPS:GPSProcessingMethod=GPS',
+      '-GPS:GPSHPositioningError=1.5',
+      '-XMP-exif:GPSLatitude=38.521',
+      '-XMP-exif:GPSLongitude=-121.521',
+      '-XMP-exif:GPSAltitude=12.5',
+      pngPath,
+    ],
+    { timeoutMs: 30_000 },
+  );
+  if (!/1 image files? updated/.test(result.stdout)) {
+    throw new Error(`GPS fixture write failed: ${result.stdout} ${result.stderr}`);
+  }
+}
+
+/**
  * Hold a file open with FileShare::None from a separate process — the real
  * Windows file lock that breaks the engine's rename step. Resolves once the
  * lock is HELD (the child writes a .ready marker after opening).

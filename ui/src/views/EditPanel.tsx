@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { MetadataPayload } from '@metadesk/shared';
-import { getMetadata, previewWrite } from '../api/client';
+import { executeGpsStrip, previewGpsStrip, previewWrite } from '../api/client';
 import { useMetadata } from '../state/queries';
 import { useUiStore } from '../state/store';
 import { Button } from '../components/ui/button';
@@ -12,6 +12,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EditFields, type CurrentValues } from '../write/EditFields';
 import { buildTagEdits, emptyStagedEdits, type StagedEdits } from '../write/fields';
 import { useWriteRunner } from '../write/useWriteRun';
+import type { GpsStripPreviewResponse } from '../write/types';
 import { basename } from '../lib/format';
 import { navigate } from '../lib/router';
 
@@ -176,7 +177,7 @@ function EditSelection({
         </div>
       )}
 
-      <GpsStrip selectedPaths={selectedPaths} gpsPayload={metadata.data} />
+      <GpsStrip selectedPaths={selectedPaths} />
       {runner.modal}
     </div>
   );
@@ -185,74 +186,79 @@ function EditSelection({
 // ---- GPS strip (destructive, phrase-gated) -----------------------------------
 
 /**
- * The GPS strip: preview listing EVERY GPS tag to be deleted per file (built
- * from real reads of the files), a typed confirmation phrase, and the note
- * that current values are exported to a sidecar before removal. The server's
- * verdict on the actual delete is surfaced verbatim — in v1 the engine's write
- * whitelist does not include GPS tags, so the refusal is shown honestly with
- * "nothing was written" rather than any pretend success.
+ * The GPS strip: the server's destructive channel on the generic write routes.
+ * The preview is the authoritative read: it lists EVERY GPS tag to be deleted
+ * per file with its current value, the sidecar export is written before
+ * anything can run, and the execute is gated on the typed phrase server-side.
+ * The server's verdict is surfaced verbatim — including the honest list of
+ * GPS-family tags it cannot remove.
  */
-function GpsStrip({
-  selectedPaths,
-  gpsPayload,
-}: {
-  selectedPaths: string[];
-  gpsPayload: MetadataPayload | undefined;
-}) {
+function GpsStrip({ selectedPaths }: { selectedPaths: string[] }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [phrase, setPhrase] = useState('');
-  const [inventory, setInventory] = useState<Array<{ filePath: string; tags: string[] }> | null>(null);
-  const [inventoryBusy, setInventoryBusy] = useState(false);
-  const [inventoryError, setInventoryError] = useState<string | null>(null);
+  const [stripPreview, setStripPreview] = useState<GpsStripPreviewResponse | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
 
+  // Per-file delete rows straight from the server preview's diffs.
   const rows = useMemo<Array<{ filePath: string; tags: string[] }>>(() => {
-    if (inventory !== null) return inventory;
-    if (gpsPayload === undefined) return [];
-    const tags = collectGpsTags(gpsPayload);
-    return tags.length > 0 ? [{ filePath: gpsPayload.filePath, tags }] : [];
-  }, [inventory, gpsPayload]);
-  const affectedFiles = rows.filter((row) => row.tags.length > 0);
+    if (stripPreview === null) return [];
+    return stripPreview.preview.files
+      .map((file) => ({
+        filePath: file.filePath,
+        tags: file.diffs
+          .filter((diff) => diff.kind === 'delete' && diff.before !== undefined)
+          .map((diff) => `${diff.tag} = ${diff.before ?? ''}`),
+      }))
+      .filter((row) => row.tags.length > 0);
+  }, [stripPreview]);
+  const affectedFiles = rows;
 
   const openDialog = async (): Promise<void> => {
     setRefusal(null);
     setPhrase('');
-    setInventoryError(null);
-    if (inventory !== null || selectedPaths.length === 1) {
-      setDialogOpen(true);
-      return;
-    }
-    setInventoryBusy(true);
+    setPreviewError(null);
+    setPreviewBusy(true);
     try {
-      const readRows: Array<{ filePath: string; tags: string[] }> = [];
-      for (const filePath of selectedPaths) {
-        readRows.push({ filePath, tags: collectGpsTags(await getMetadata(filePath, 'all')) });
-      }
-      setInventory(readRows);
+      const preview = await previewGpsStrip(selectedPaths);
+      setStripPreview(preview);
       setDialogOpen(true);
     } catch (cause) {
-      setInventoryError(cause instanceof Error ? cause.message : String(cause));
+      setPreviewError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setInventoryBusy(false);
+      setPreviewBusy(false);
     }
   };
 
   const attemptStrip = async (): Promise<void> => {
-    if (phrase !== GPS_CONFIRM_PHRASE || busy || affectedFiles.length === 0) return;
+    if (phrase !== GPS_CONFIRM_PHRASE || busy || stripPreview === null) return;
     setBusy(true);
     try {
-      await previewWrite(
-        affectedFiles.map((row) => row.filePath),
-        [
-          { tag: 'EXIF:GPSLatitude', op: 'delete' },
-          { tag: 'EXIF:GPSLongitude', op: 'delete' },
-        ],
-      );
+      const result = await executeGpsStrip(stripPreview.preview.previewId, phrase);
       setDialogOpen(false);
       setRefusal(null);
+      // Land on the standard Results report: three-valued per-file truth, the
+      // sidecar export path, and the honest not-removed list. `edits` stays
+      // empty so Retry is disabled (a strip retry must re-preview through the
+      // GPS channel, not the plain edit channel).
+      useUiStore.getState().setLastWrite({
+        label: `Remove GPS — ${selectedPaths.length} file${selectedPaths.length === 1 ? '' : 's'}`,
+        edits: [],
+        outcome: result.outcome,
+        commandPreview: result.commandPreview,
+        consistencyNotes: result.consistencyNotes,
+        at: new Date().toISOString(),
+        scrub: {
+          exportedValuesPath: stripPreview.exportedValuesPath,
+          notRemoved: stripPreview.notRemoved,
+        },
+      });
+      setStripPreview(null);
+      navigate('/results');
     } catch (cause) {
-      // The engine's verdict, verbatim. In v1 this is the whitelist refusal.
+      // The server's refusal, verbatim (wrong phrase, locked session, RAW…).
       setRefusal(cause instanceof Error ? cause.message : String(cause));
       setDialogOpen(false);
     } finally {
@@ -277,25 +283,20 @@ function GpsStrip({
           variant="outline"
           size="sm"
           className="border-destructive/60 text-destructive"
-          disabled={busy || inventoryBusy}
+          disabled={busy || previewBusy}
           onClick={() => void openDialog()}
         >
-          {inventoryBusy ? 'Reading GPS tags…' : 'Remove GPS from selection…'}
+          {previewBusy ? 'Reading GPS tags…' : 'Remove GPS from selection…'}
         </Button>
       </div>
-      {inventoryError !== null && <div className="mt-2 text-xs text-destructive">{inventoryError}</div>}
+      {previewError !== null && <div className="mt-2 text-xs text-destructive">{previewError}</div>}
 
       {refusal !== null && (
         <div className="mt-3 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs">
           <div className="font-semibold text-warning">
-            The engine refused this write — nothing was changed.
+            This was refused — nothing was changed.
           </div>
           <p className="mt-1 break-words font-mono">{refusal}</p>
-          <p className="mt-1 text-muted-foreground">
-            In this version the engine's editable-field whitelist does not include GPS tags, so the
-            removal cannot be executed. The scan above is a real read of your files, and no file was
-            touched.
-          </p>
         </div>
       )}
 
@@ -319,11 +320,25 @@ function GpsStrip({
             affectedFiles.map((row) => (
               <div key={row.filePath} className="mb-1.5">
                 <div className="truncate font-mono text-xs font-semibold">{basename(row.filePath)}</div>
-                <div className="font-mono text-[11px] text-muted-foreground">{row.tags.join(', ')}</div>
+                <div className="font-mono text-[11px] text-muted-foreground">{row.tags.join(' · ')}</div>
               </div>
             ))
           )}
         </div>
+        {stripPreview !== null && stripPreview.notRemoved.length > 0 && (
+          <div className="rounded-md border border-warning/50 bg-warning/10 px-2 py-1.5 text-[11px]">
+            <span className="font-semibold text-warning">
+              {stripPreview.notRemoved.length} GPS item(s) can NOT be removed by this version:
+            </span>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {stripPreview.notRemoved.map((row) => (
+                <li key={`${row.filePath}:${row.tag}`}>
+                  <span className="font-mono">{basename(row.filePath)}</span> — {row.tag}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <label htmlFor="gps-phrase" className="block text-xs font-medium">
           Type “{GPS_CONFIRM_PHRASE}” to confirm
         </label>
@@ -339,48 +354,6 @@ function GpsStrip({
       </ConfirmDialog>
     </section>
   );
-}
-
-// ---- helpers -----------------------------------------------------------------
-
-const GPS_TAG_ORDER = [
-  'gpslatitude',
-  'gpslongitude',
-  'gpsaltitude',
-  'gpsaltituderef',
-  'gpsdatetimestamp',
-  'gpsdatestamp',
-  'gpstimestamp',
-  'gpsimgdirection',
-  'gpsimgdirectionref',
-  'gpsmapdatum',
-  'gpsversionid',
-  'gpsspeed',
-  'gpsspeedref',
-  'gpstrack',
-  'gpstrackref',
-  'gpsdestlatitude',
-  'gpsdestlongitude',
-  'gpsprocessingmethod',
-];
-
-/** Every GPS tag a file actually carries, in canonical order. */
-function collectGpsTags(payload: MetadataPayload): string[] {
-  const keys = new Set<string>();
-  for (const key of Object.keys(payload.all)) {
-    if (/^(gps|exif:gps)/i.test(key)) keys.add(key);
-  }
-  for (const tag of payload.raw) {
-    if (/^gps$/i.test(tag.group)) keys.add(`${tag.group}:${tag.name}`);
-  }
-  return [...keys].sort((a, b) => {
-    const rank = (key: string): number => {
-      const bare = (key.split(':').pop() ?? '').toLowerCase();
-      const index = GPS_TAG_ORDER.indexOf(bare);
-      return index === -1 ? GPS_TAG_ORDER.length : index;
-    };
-    return rank(a) - rank(b) || a.localeCompare(b);
-  });
 }
 
 function currentFromPayload(payload: MetadataPayload): CurrentValues {

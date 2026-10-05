@@ -17,6 +17,10 @@ import type {
   ThumbnailInfo,
 } from '@metadesk/shared';
 import type {
+  CancelWriteResponse,
+  ExecuteStreamFrame,
+  GpsStripExecuteResponse,
+  GpsStripPreviewResponse,
   HealthWithWrite,
   RecoveryFixAction,
   RecoveryFixResult,
@@ -24,7 +28,6 @@ import type {
   ScrubExecuteResponse,
   ScrubPreviewResponse,
   SessionModeResult,
-  ExecuteStreamFrame,
   TagEdit,
   UndoPreviewResponse,
   UndoResultResponse,
@@ -417,6 +420,56 @@ export function scrubExecute(files: string[], confirm: string): Promise<ScrubExe
   }).then((result) => {
     capturePreview(result, 'AI metadata scrub', false);
     return result;
+  });
+}
+
+// --- GPS strip + batch cancel (leaf 1.1.4b) ---------------------------------
+
+/**
+ * POST /api/write/preview {files, destructive:{scope:"gps"}} — the destructive
+ * GPS-strip preview. The server applies its own curated GPS whitelist (the
+ * client declares intent, never a tag list), writes the mandatory pre-write
+ * sidecar export, and lists the GPS tags it cannot delete by name.
+ */
+export function previewGpsStrip(files: string[]): Promise<GpsStripPreviewResponse> {
+  return request<GpsStripPreviewResponse>('/api/write/preview', {
+    method: 'POST',
+    body: JSON.stringify({ files, destructive: { scope: 'gps' } }),
+  }).then((result) => {
+    capturePreview(result, `GPS strip preview · ${files.length} file(s)`, false);
+    return result;
+  });
+}
+
+/**
+ * POST /api/write/execute {previewId, destructive:{confirmationPhrase}} — the
+ * phrase-gated execution of a GPS-strip preview. The server re-checks the
+ * phrase and refuses (403) without writing anything unless it matches exactly.
+ */
+export function executeGpsStrip(
+  previewId: string,
+  confirmationPhrase: string,
+): Promise<GpsStripExecuteResponse> {
+  return request<GpsStripExecuteResponse>('/api/write/execute', {
+    method: 'POST',
+    body: JSON.stringify({ previewId, destructive: { confirmationPhrase } }),
+  }).then((result) => {
+    capturePreview(result, 'GPS strip execute', false);
+    return result;
+  });
+}
+
+/**
+ * POST /api/write/cancel {batchId} — request a graceful cancel of a running
+ * batch. Cooperative by contract: the in-flight chunk always finishes (exiftool
+ * is never interrupted mid-file), written files keep their verified results,
+ * and unprocessed files are reported as not attempted. A batch that already
+ * finished refuses the cancel with 404 — honestly.
+ */
+export function cancelWriteBatch(batchId: string): Promise<CancelWriteResponse> {
+  return request<CancelWriteResponse>('/api/write/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ batchId }),
   });
 }
 

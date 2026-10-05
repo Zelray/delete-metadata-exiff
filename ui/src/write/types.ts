@@ -51,13 +51,13 @@ export interface WritePreviewResponse {
 /**
  * One SSE frame streamed on POST /api/write/execute {stream:true}. The server
  * sends `write-progress` chunks, then one `batch-complete` — or a single
- * `write-error`. The payload is the shared SseWriteProgress/SseBatchComplete
- * shape plus the frame envelope (seq/timestamp/type).
+ * `write-error`. A cancelled batch adds one additive `batch-cancelled` frame
+ * before its `batch-complete` (clients ignore unknown frame types).
  */
 export interface ExecuteStreamFrame {
   seq: number;
   timestamp: string;
-  type: 'write-progress' | 'batch-complete' | 'write-error';
+  type: 'write-progress' | 'batch-complete' | 'write-error' | 'batch-cancelled';
   batchId?: string;
   /** 'intent' | 'write' | 'verify' | 'done' — chunk-level progress. */
   phase?: string;
@@ -68,6 +68,31 @@ export interface ExecuteStreamFrame {
   commandPreview?: string[];
   code?: string;
   message?: string;
+  /** batch-cancelled only: when the cancel flag was honored. */
+  cancelledAt?: string;
+  /** batch-cancelled only: the files the batch never attempted. */
+  notAttemptedFilePaths?: string[];
+}
+
+/**
+ * Additive cancel fields the server adds to a BatchOutcome ONLY when the batch
+ * was cancelled between chunks (the shared BatchOutcome shape is frozen). A
+ * not-attempted file keeps a three-valued `status: 'unchanged'` — literally
+ * true, nothing changed on disk — with `notAttempted: true` carrying the
+ * fourth honest state explicitly.
+ */
+export interface WriteOutcomeNotAttempted extends WriteOutcome {
+  notAttempted: true;
+  notAttemptedReason: string;
+}
+
+export interface BatchOutcomeWithCancel extends BatchOutcome {
+  cancelled?: true;
+  cancelledAt?: string;
+  /** Count of files the batch never attempted (also counted in `unchanged`). */
+  notAttempted?: number;
+  /** The unprocessed files — a retry preview covers exactly these. */
+  notAttemptedFilePaths?: string[];
 }
 
 /** POST /api/write/execute (non-stream) and the batch-complete frame payload. */
@@ -116,6 +141,10 @@ export interface HistoryBatch {
   outcomes: WriteOutcome[];
   undoable: boolean;
   backups: HistoryBackupRow[];
+  /** Additive (leaf 1.1.4b): present on destructive flows — the strip/scrub id. */
+  scrubId?: string;
+  /** Additive: path of the mandatory pre-write sidecar export, when one ran. */
+  exportedValuesPath?: string;
 }
 
 export interface WriteHistoryResponse {
@@ -178,6 +207,44 @@ export interface ScrubExecuteResponse {
   exportedValuesPath: string;
   /** Detected-but-NOT-removed items, restated honestly. */
   notRemoved: Array<{ filePath: string; tag: string; reason: string }>;
+}
+
+// ---- GPS strip (destructive channel on the generic write routes, 1.1.4b) -----
+
+/**
+ * POST /api/write/preview {files, destructive:{scope:"gps"}} — the server
+ * expands the delete list from its own curated GPS whitelist (the client never
+ * sends tags), produces the mandatory pre-write sidecar export, and reports
+ * the GPS-family tags it can NOT delete by name.
+ */
+export interface GpsStripPreviewResponse extends WritePreviewResponse {
+  destructive: {
+    scope: 'gps';
+    requiresTypedConfirmation: true;
+    /** The exact phrase the execute step must send back. */
+    confirmationPhrase: string;
+  };
+  gpsStripId: string;
+  /** Path of the sidecar export written before anything can be executed. */
+  exportedValuesPath: string;
+  notRemoved: Array<{ filePath: string; tag: string; reason: string }>;
+}
+
+/**
+ * POST /api/write/execute {previewId, destructive:{confirmationPhrase}} — the
+ * outcome of a phrase-gated GPS strip (or any destructive execute).
+ */
+export interface GpsStripExecuteResponse extends WriteExecuteResponse {
+  outcome: BatchOutcomeWithCancel;
+}
+
+/** POST /api/write/cancel {batchId} — a cooperative, between-chunks cancel. */
+export interface CancelWriteResponse {
+  batchId: string;
+  cancelRequested: true;
+  /** What will (and will not) happen, verbatim for the UI. */
+  note: string;
+  commandPreview: string[];
 }
 
 // ---- recovery -----------------------------------------------------------------
