@@ -161,8 +161,8 @@ Cautions (pinned in BUILD-NOTES "Test seams" and proven here):
 | 3 | 1.1.4 | `fa8c697` | write pipeline + safety core: preview/execute/verify, JSONL journal, single-writer lock, pathGuard, recovery, AI-scrub service, `verify-write` |
 | 3 | orchestrator | `b4ef514` | integration: mounted write + recovery routes in `server/src/index.ts` (onSend adds `writeUnlocked`/`mode` to /api/health) |
 | 4 | 1.1.5 | `86e18c6` | UI write surfaces: Save Review gate, Edit, Batch, Results, History/Undo, AI scrub wizard, Settings; `verify-ui-write` |
-| 5 | 1.1.4b | *(in flight)* | GPS destructive channel (phrase-gated, export-first), graceful batch cancel, history scrub linkage |
-| 5 | 1.1.6 | *(this commit)* | launch lifecycle (`bin/metadesk.mjs` + dev/prod pairs), `verify-launch`, README/STATUS/HANDOFF/CLAUDE.md, `resources/help`, `data/.gitkeep` |
+| 5 | 1.1.4b | DONE — d13db99 | GPS destructive channel (phrase-gated, export-first), graceful batch cancel, history scrub linkage |
+| 5 | 1.1.6 | DONE — f4e7964 | launch lifecycle (`bin/metadesk.mjs` + dev/prod pairs), `verify-launch`, README/STATUS/HANDOFF/CLAUDE.md, `resources/help`, `data/.gitkeep` |
 
 Orchestrator adjudications worth remembering (full log: `../.unlazy/metagui/status.log`):
 
@@ -218,21 +218,11 @@ stop and escalate to the orchestrator instead.
 
 ## 6. Remaining work, with acceptance criteria
 
-1. **Leaf 1.1.4b — GPS destructive channel + cancel (IN FLIGHT, wave 5).**
-   Server: GPS destructive path in `routes/writes.ts` + `services/gpsStrip.ts`
-   (phrase-gated, exports current GPS values to a sidecar before deleting, per BUILD-NOTES
-   write-pipeline facts); graceful batch cancel; journal/history scrub linkage. UI:
-   `api/client.ts` + `write/types.ts` + `views/EditPanel` wiring.
-   **AC:** `leaf-1.1.4b.md` G1/G2; `verify-write` and `verify-ui-write` stay green;
-   `verify-server` and `verify-launch` still pass afterwards.
-2. **Leaf 1.2.1 — e2e oracles + Playwright matrix.** Create `app/scripts/verify-e2e.mjs`
-   with `roundtrip` and `scrub` modes. **AC:** root gates G3/G4 —
-   `e2e roundtrip verification passed` (read → write a tag to a copy → verify externally
-   with vendored exiftool → undo restores original bytes) and
-   `e2e AI-scrub verification passed` (detect → scrub → external confirm → undo).
-   Plus the buildOutline step-8 matrix: spaces/CJK/accents/emoji names, 300+ char paths,
-   UNC, read-only/hidden/locked files, `%`/`#`/`=` in names, 10k-file batch with injected
-   failures, kill-and-recover drills (journal reconciliation + orphan recovery).
+1. ~~**Leaf 1.1.4b — GPS destructive channel + cancel**~~ **DONE** (wave 5, commit
+   d13db99; gates met — see §8 and `.unlazy/metagui/gates/leaf-1.1.4b.md`).
+2. ~~**Leaf 1.2.1 — e2e oracles + Playwright matrix**~~ **DONE** (wave 6, commit 593159c;
+   root gates G3/G4 MET with bound evidence; `app/scripts/verify-e2e.mjs` modes:
+   `unit | roundtrip | scrub | gps | all` — `all` ≈ 5 min).
 3. **Tauri v2 wrap (buildOutline step 9) — the v1 desktop shell.** Add `app/tauri/`
    (`src-tauri/`, `tauri.conf.json`): register `vendor/exiftool/exiftool.exe` as a Tauri
    sidecar; bundle portable `node.exe` and spawn the server as its child; own window +
