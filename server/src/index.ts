@@ -48,6 +48,8 @@ import { registerFileRoutes } from './routes/files.js';
 import { registerMetadataRoutes } from './routes/metadata.js';
 import { registerThumbnailRoutes } from './routes/thumbnails.js';
 import { registerEventsRoute, SseHub } from './routes/events.js';
+import { registerWriteRoutes } from './routes/writes.js';
+import { registerRecoveryRoutes } from './routes/recovery.js';
 
 export interface BuildServerOptions {
   config: MetaDeskConfig;
@@ -193,6 +195,11 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
   registerMetadataRoutes(app, { metadata });
   registerThumbnailRoutes(app, { thumbnails });
   registerEventsRoute(app, hub);
+  // Safety core (leaf 1.1.4): write pipeline + recovery routes. Registered
+  // after the read routes; write routes self-gate on the session unlock
+  // state and the single-writer lock.
+  registerWriteRoutes(app, { engine, dataDir: config.dataDir, hub });
+  registerRecoveryRoutes(app, { dataDir: config.dataDir });
 
   await registerStaticUi(app, config, { token, version: config.serverVersion });
 
