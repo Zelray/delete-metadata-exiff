@@ -69,8 +69,10 @@ journals, caches, and settings live there). Extract the whole folder and keep it
 
 - Windows 10 (version 1803 or newer) or Windows 11, 64-bit.
 - Nothing else. The WebView2 component both of those ship with draws the window; if a
-  machine is somehow missing it, MetaDesk shows a clear message with Microsoft's download
-  link rather than a broken window. No internet connection is needed to use the app.
+  machine is somehow missing it, MetaDesk is built to show a clear message with
+  Microsoft's download link rather than a broken window (verified in the program's code;
+  not exercised on a machine actually missing the component). No internet connection is
+  needed to use the app.
 
 ## First run: the SmartScreen message
 
@@ -113,6 +115,11 @@ name precisely so that signature keeps working for it), and `exiftool.exe` is th
 unmodified ExifTool 13.59 Windows binary exactly as it was vendored — that copy carries no
 publisher signature, which was measured and recorded at build time. The rest of the engine
 lives in `exiftool_files\`, which must stay beside it.
+
+(Reader's note on the build log: Windows' signature checker sometimes appends a
+parenthetical to a "NotSigned" result that mentions execution policies. That
+parenthetical is generic Windows boilerplate, not a failed check — the status field
+itself ("NotSigned") is the fact of record.)
 
 The zip contains 519 files under the single `MetaDesk/` folder; a per-file SHA-256 manifest
 of everything inside it is emitted at build time (`portable-manifest-1.0.0.json`), and the

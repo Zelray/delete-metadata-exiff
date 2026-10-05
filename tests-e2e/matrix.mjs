@@ -101,7 +101,7 @@ const FRAME_CLAIMS = [
   {
     file: '02-grid.png',
     claim:
-      'Folder grid: hostile filenames (spaces/CJK/accents/%/#/=) render as real cards, the GPS badge rides in from the scan on photo.jpg, and the thumbnail endpoint streams a real JPEG the grid renders.',
+      'Folder grid: hostile filenames (spaces/accents/%/#/=) render as real cards and the thumbnail endpoint streams a real JPEG the grid renders. Badges populate as files are inspected (the scan badges and the ninth card sit below the fold; the GPS badge is proven by the Detail frame\'s GPS card).',
   },
   {
     file: '03-detail.png',
