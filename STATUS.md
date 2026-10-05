@@ -43,11 +43,12 @@ to stop. Full plain-English detail: `README.md`.
 
 ## Next steps
 
-1. Reality Checker confirmation re-audit of the closed state (in flight at update time).
-2. Tauri v2 wrap (step 9) → double-click icon opens its own window with zero server/UI
+**Phase 2 session handoff is written: `..\HANDOFF-PHASE2.md` (repo root) — start there.**
+
+1. Tauri v2 wrap (step 9) → double-click icon opens its own window with zero server/UI
    code changes.
-3. v1 release checklist (step 10): clean-machine smoke, diagnostics bundle + copy-logs
+2. v1 release checklist (step 10): clean-machine smoke, diagnostics bundle + copy-logs
    button, `HANDOFF-V1.md`, tag the release.
-4. Screenshot-set polish (Evidence Collector notes): retake 01 post-scan (recents +
+3. Screenshot-set polish (Evidence Collector notes): retake 01 post-scan (recents +
    preflight), 09 with output card in frame, 10 full-page with all five locked floors;
    add a capture manifest. Cosmetic only — the load-bearing claims are visually proven.
