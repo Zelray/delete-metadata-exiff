@@ -47,7 +47,9 @@ stop. Full plain-English detail: `README.md`.
 
 ## Next steps
 
-**The release is cut. Future sessions start from `HANDOFF-V1.md` (release runbook).**
+**The release is cut. Closeout (drill + QA verdict) for the wrapping session:
+`..\HANDOFF-PHASE2-CLOSEOUT.md` (repo root). Steady-state sessions start from
+`HANDOFF-V1.md` (release runbook).**
 
 1. v1.1 backlog (Mike's call, per `..\HANDOFF-PHASE2.md` §2): write-capable console,
    strip/clean wizard presets, CSV/JSON bulk import-export, geotag-from-GPX, the SSE
