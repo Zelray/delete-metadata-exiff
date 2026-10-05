@@ -922,9 +922,13 @@ async function listProcesses() {
   // Control characters in some process's command line (seen live: a raw U+001A
   // in an unrelated agent's command line) are NOT escaped by ConvertTo-Json and
   // are illegal inside a JSON string literal, so the whole listing fails to
-  // parse. The gate only matches names and ASCII substrings, so flatten them.
+  // parse. The gate only matches names and ASCII substrings, so flatten them —
+  // belt and braces: once in PowerShell (the common case, keeps the payload
+  // honest) and once here on the decoded text (deterministic, catches whatever
+  // transient encoding artifact a machine can produce).
   // (`\\x00` in JS -> `\x00` in PowerShell: a regex character class.)
-  const json = await runPowerShell(`
+  const json = (
+    await runPowerShell(`
     Get-CimInstance Win32_Process | ForEach-Object {
       [pscustomobject]@{
         ProcessId       = $_.ProcessId
@@ -934,7 +938,8 @@ async function listProcesses() {
       }
     } |
       ConvertTo-Json -Compress -Depth 2
-  `);
+  `)
+  ).replace(/[\u0000-\u001F]/g, ' ');
   const parsed = JSON.parse(json || '[]');
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   return rows.map((row) => ({
