@@ -162,9 +162,37 @@ export function getMetadata(filePath: string, depth: MetadataDepth): Promise<Met
   });
 }
 
-export function getThumbnail(filePath: string): Promise<ThumbnailInfo> {
+export async function getThumbnail(filePath: string): Promise<ThumbnailInfo> {
   const params = new URLSearchParams({ path: filePath });
-  return request<ThumbnailInfo>(`/api/thumbnail?${params.toString()}`);
+  const endpoint = `/api/thumbnail?${params.toString()}`;
+  const headers: Record<string, string> = {};
+  const token = readBootstrap().token;
+  if (token !== '') headers['X-MetaDesk-Token'] = token;
+  // The endpoint streams raw image/jpeg bytes (BUILD-NOTES route pin) and an
+  // <img> tag cannot send the X-MetaDesk-Token header — so the client fetches
+  // the bytes itself and hands the view an object URL.
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { headers });
+  } catch (cause) {
+    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
+  }
+  if (response.status === 404) {
+    throw new MetaApiError(404, {
+      code: 'not_found',
+      message: 'This file has no embedded preview image.',
+    });
+  }
+  if (!response.ok) {
+    throw new TransportError(response.status, `Thumbnail failed (HTTP ${response.status}).`);
+  }
+  const blob = await response.blob();
+  return {
+    filePath,
+    url: URL.createObjectURL(blob),
+    source: 'thumbnail',
+    cached: false,
+  };
 }
 
 /**
@@ -287,7 +315,12 @@ export async function executeWrite(
     return result;
   }
 
-  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const headers: Record<string, string> = {
+    Accept: 'text/event-stream',
+    // Fastify only parses the JSON body when Content-Type says JSON — without
+    // this the server 400s with "body must include previewId" (e2e matrix bug).
+    'Content-Type': 'application/json',
+  };
   const token = readBootstrap().token;
   if (token !== '') headers['X-MetaDesk-Token'] = token;
 
