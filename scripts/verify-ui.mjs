@@ -30,6 +30,12 @@ function fail(message, extra = '') {
   process.exit(1);
 }
 
+// Progress goes to stderr so the FIRST stdout line on success is exactly
+// "ui build verification passed" (gate CHECK contract, like verify-engine).
+function progress(message) {
+  process.stderr.write(`${message}\n`);
+}
+
 function resolveTool(relativeCandidates, label) {
   for (const candidate of relativeCandidates) {
     const abs = path.join(APP_ROOT, candidate);
@@ -92,7 +98,7 @@ const steps = [
 
 let lastOutput = '';
 for (const step of steps) {
-  process.stdout.write(`[verify-ui] running ${step.name} …\n`);
+  progress(`[verify-ui] running ${step.name} …`);
   const result = await runStep(step.name, step.entryArgs);
   lastOutput = `${result.out}\n${result.err}`.trim();
   if (result.code !== 0) {
@@ -113,7 +119,7 @@ if (size < 200) {
 }
 
 process.stdout.write('ui build verification passed\n');
-process.stdout.write(
+process.stderr.write(
   `\n  tsc -b:        strict TypeScript clean (app + node configs)\n` +
     `  vite build:    production bundle emitted\n` +
     `  dist/index.html: ${size} bytes\n` +
