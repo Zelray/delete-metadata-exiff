@@ -1,5 +1,7 @@
 //! The bundled engine's lifecycle — the pinned ladder from
-//! `.unlazy/metagui-phase2/BUILD-NOTES.md` ("The lifecycle ladder"), steps 0-5.
+//! `.unlazy/metagui-phase2/BUILD-NOTES.md` ("The lifecycle ladder"): steps 0-5
+//! live here (step 7, the crash dialog, is `main.rs` + `dialog.rs` and calls
+//! back into `launch_sweep` / `spawn_engine` / `wait_for_health` for its Reopen).
 //!
 //! Invariants this module must never break:
 //!   * argv-array execution only (`std::process::Command` with an explicit
