@@ -1,7 +1,7 @@
 # MetaDesk — STATUS (one-glance chart)
 
-Updated: 2026-10-05 (wave 6 complete — all 12 build packages verified; e2e + visual evidence green). Detailed handoff: `HANDOFF.md`.
-Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md`.
+Updated: 2026-10-05 (**v1.0.0 RELEASED** — desktop wrap complete, package verified, release tagged). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
+Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/metagui-phase2/BUILD-NOTES.md`.
 
 ## Patient chart
 
@@ -16,18 +16,18 @@ Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md`.
 | Docs (README / STATUS / HANDOFF / CLAUDE.md / resources/help) | DONE | leaf 1.1.6 G2 manual review |
 | GPS destructive channel + graceful batch cancel + history scrub linkage | DONE (59-tag whitelist, phrase-gated, export-first, byte-identical undo; cancel between files only) | `node app/scripts/verify-write.mjs` (leaf 1.1.4b, 90 tests) + e2e `gps` oracle |
 | End-to-end oracles + Playwright visual matrix (10 real-flow screenshots) | DONE | `node app/scripts/verify-e2e.mjs all` → "all e2e verifications passed" (leaf 1.2.1); root gates G3/G4 MET with bound evidence |
-| Desktop wrap (own window, Start-menu icon, installer) | NOT STARTED | buildOutline step 9 (Tauri v2) — next phase |
+| Desktop wrap (own window, tray, Explorer drag-drop with real paths, single-instance, crash dialog, portable package) | WORKING | `node app/scripts/verify-desktop.mjs bundle\|shell\|matrix` → "desktop … verification passed" (leaves 2.1.1/2.1.2); `node app/scripts/verify-package.mjs` → "package verification passed" (leaf 2.2.2); `node app/scripts/run-clean-machine.mjs` → "clean-machine drill passed" (leaf 2.2.3) |
+| Release v1.0.0 (clean-machine smoke, update rehearsal, release records, tag) | DONE (zip + NSIS built; provenance hashes published; tag `v1.0.0`) | `node app/scripts/run-clean-machine.mjs` + `… update` → "clean-machine drill passed" / "update rehearsal passed"; `docs/release/RELEASE-NOTES-v1.0.0.md`; runbook `HANDOFF-V1.md` (leaf 2.2.3) |
 
 ## How to start it
 
-Double-click `bin\metadesk.cmd` → browser opens at a 127.0.0.1 address. Close the window
-to stop. Full plain-English detail: `README.md`.
+Users: double-click `MetaDesk.exe` inside the extracted package folder (first run shows the
+documented SmartScreen click-through — `README.md` + `docs/release/`). Development:
+double-click `bin\metadesk.cmd` → browser opens at a 127.0.0.1 address. Close the window to
+stop. Full plain-English detail: `README.md`.
 
 ## Known gaps (honest list)
 
-- **Desktop wrap pending** — MetaDesk currently lives in a browser tab the launcher opens;
-  the Tauri v2 wrap (own window, tray, Explorer drag-drop with absolute paths, installer)
-  is buildOutline step 9 and is numbered, non-optional work before v1.
 - **ComfyUI `prompt`/`workflow` chunks and C2PA/JUMBF manifests are detect-only** — the AI
   scrub reports them under "cannot be removed" with plain-English notes; it never silently
   skips them.
@@ -36,19 +36,23 @@ to stop. Full plain-English detail: `README.md`.
 - **Settings: engine-path restore and the `-api` knob are deferred**; safety toggles there
   are hard-floored (visible, explained, not switchable-off).
 - **Write-capable console deferred to v1.1** — the v1 console is strictly read-only.
-- **Launcher idle-exit deferred to the Tauri wrap** — with a browser tab there is no
-  reliable "the user is gone" signal, so the v1 lifecycle closes only when you close its
-  console, press Ctrl+C, or run `--stop`. The Tauri shell ties server lifetime to the
-  window and removes the question entirely.
+- **SSE-held-open close (dev path only)** — with a live `/api/events` connection the
+  graceful close waits out the 20 s launcher window and ends in the documented
+  `taskkill /T /F` escalation (no orphans, journals intact). The packaged app is immune:
+  the shell navigates the webview away first and closes in ≈1 s. Fix is a v1.1 server
+  touch, forbidden while the freeze holds (`metagui-phase2/BUILD-NOTES.md`).
+- **No signing certificate in v1** — first run shows SmartScreen "Windows protected your
+  PC" → More info → Run anyway (documented in README + release notes); NSIS
+  installer is built but the portable zip is the distribution of record.
 
 ## Next steps
 
-**Phase 2 session handoff is written: `..\HANDOFF-PHASE2.md` (repo root) — start there.**
+**The release is cut. Future sessions start from `HANDOFF-V1.md` (release runbook).**
 
-1. Tauri v2 wrap (step 9) → double-click icon opens its own window with zero server/UI
-   code changes.
-2. v1 release checklist (step 10): clean-machine smoke, diagnostics bundle + copy-logs
-   button, `HANDOFF-V1.md`, tag the release.
-3. Screenshot-set polish (Evidence Collector notes): retake 01 post-scan (recents +
-   preflight), 09 with output card in frame, 10 full-page with all five locked floors;
-   add a capture manifest. Cosmetic only — the load-bearing claims are visually proven.
+1. v1.1 backlog (Mike's call, per `..\HANDOFF-PHASE2.md` §2): write-capable console,
+   strip/clean wizard presets, CSV/JSON bulk import-export, geotag-from-GPX, the SSE
+   server fix, Settings engine-restore + `-api` knob, and the rest of the list.
+2. Post-MVP dependency pass for the 5 vitest-tree audit findings (dev-only; do NOT
+   `npm audit fix --force`).
+3. If distribution widens: purchase a code-signing certificate (removes SmartScreen) and
+   exercise the NSIS install/update flow, then re-record the release story.
