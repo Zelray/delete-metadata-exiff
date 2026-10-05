@@ -52,6 +52,10 @@ nothing is left running; even a hard kill of the window is backed by a kernel-le
 cleanup so no stray processes survive. A **diagnostics bundle** button in Settings zips up
 the app's logs and journal tail for support.
 
+(One honest footnote at release time: the drag-drop channel is proven by automated
+tests end to end; the owner's final hands-on pass — dragging real files from Explorer
+on this exact package — was still scheduled as this document went out.)
+
 **Safety model, in one sentence:** nothing changes a file until you unlock writing for the
 session, preview first always, backups + journal + hash-verified undo always, and only a
 short whitelist of well-behaved fields is editable — arbitrary text can never become an
@@ -140,9 +144,13 @@ byte-identical and the upgraded app boots healthy (`node app/scripts/run-clean-m
   goes away permanently once you click through it, and disappears entirely in a future
   release that carries a signing certificate.
 - **The one-click installer (`MetaDesk_1.0.0_x64-setup.exe`) is built but not the primary
-  way to run v1.** The NSIS installer is shipped for completeness; the portable zip is the
+  way to run v1.** The NSIS installer is shipped for completeness — its install/uninstall
+  flow was not exercised for this release — while the portable zip is the
   distribution of record, the flow the release checklist exercises end to end, and the
   flow whose update path is rehearsed. Use the zip.
+- **The package includes the UI's source-map files** (`.js.map` inside `ui\dist\`) —
+  build output that ships with the bundle. They are harmless, add a little size, and can
+  help diagnose any screen-layer problem you ever report.
 - **ComfyUI `prompt`/`workflow` chunks and C2PA/JUMBF manifests are detect-only.** The AI
   scrubber finds them and tells you plainly they cannot be removed yet (the ExifTool
   engine cannot delete unlisted PNG chunks by name, and group-wipes are forbidden in v1 for
