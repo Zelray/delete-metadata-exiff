@@ -313,6 +313,27 @@ pub fn spawn_engine(state: &EngineState) -> Result<u32, String> {
         ),
     }
 
+    // A stop (window close / tray Quit) that begins while a boot or a Reopen is
+    // still spawning must not leave a fresh engine behind. The Job Object would
+    // kill it when the process exits anyway, but run the ladder's core on it
+    // now so nothing depends on that timing. Whichever of the two ladders takes
+    // the pipe first wins; the other finds an empty slot and moves on.
+    if state.stopping.load(Ordering::SeqCst) {
+        logging::line(
+            "spawn",
+            "a stop started while the engine was spawning; stopping the fresh engine",
+        );
+        let pipe = state.stdin_pipe.lock().expect("stdin lock").take();
+        drop(pipe);
+        let mut child = state.child.lock().expect("child lock").take();
+        if let Some(child) = child.as_mut() {
+            wait_for_exit_or_escalate(child, Some(pid));
+        }
+        // The fresh portfile names a pid that is now stopping; the next launch's
+        // step-0 sweep owns it (this only happens on the way out of the app).
+        return Err("MetaDesk is shutting down; the engine was not started".to_string());
+    }
+
     Ok(pid)
 }
 
@@ -445,30 +466,7 @@ pub fn shutdown(state: &EngineState, reason: &str) {
         guard.take()
     };
     if let Some(child) = child.as_mut() {
-        let deadline = Instant::now() + GRACE_WINDOW;
-        let mut exited = false;
-        while Instant::now() < deadline {
-            if child
-                .try_wait()
-                .map(|status| status.is_some())
-                .unwrap_or(true)
-            {
-                exited = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if exited {
-            logging::line("stop", "engine exited inside the grace window");
-        } else if let Some(pid) = pid {
-            // 5. Escalate: tree kill so the engine's own child dies too.
-            logging::line(
-                "WARN",
-                &format!("engine pid {pid} ignored the graceful stop; escalating to taskkill /T /F"),
-            );
-            taskkill_tree(pid);
-            wait_until_dead(pid, ESCALATION_WINDOW);
-        }
+        wait_for_exit_or_escalate(child, pid);
     }
 
     // Sweep the residue we own: the portfile naming a dead pid is noise a
@@ -495,6 +493,37 @@ pub fn shutdown(state: &EngineState, reason: &str) {
     }
     state.ladder_done.store(true, Ordering::SeqCst);
     logging::line("stop", "shutdown ladder complete");
+}
+
+/// Steps 4-5 on one already-taken child handle: grace-poll the handle we hold
+/// (exact, not guessed), then escalate to a tree kill when the stop channel was
+/// ignored. Shared by the shutdown ladder and by spawn's fresh-engine guard so
+/// the escalation behaviour can never drift between the two.
+fn wait_for_exit_or_escalate(child: &mut Child, pid: Option<u32>) {
+    let deadline = Instant::now() + GRACE_WINDOW;
+    let mut exited = false;
+    while Instant::now() < deadline {
+        if child
+            .try_wait()
+            .map(|status| status.is_some())
+            .unwrap_or(true)
+        {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if exited {
+        logging::line("stop", "engine exited inside the grace window");
+    } else if let Some(pid) = pid {
+        // 5. Escalate: tree kill so the engine's own child dies too.
+        logging::line(
+            "WARN",
+            &format!("engine pid {pid} ignored the graceful stop; escalating to taskkill /T /F"),
+        );
+        taskkill_tree(pid);
+        wait_until_dead(pid, ESCALATION_WINDOW);
+    }
 }
 
 // ---------------------------------------------------------------------------

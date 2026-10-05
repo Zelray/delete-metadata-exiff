@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import type { FolderScanRequest, FolderScanResult } from '@metadesk/shared';
 import { useUiStore } from '../state/store';
 import { useFolderScan } from '../state/queries';
+import { onDroppedPaths } from '../api/tauriBridge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input, Toggle } from '../components/ui/controls';
@@ -38,6 +39,14 @@ const DEFAULT_REQUEST: FolderScanRequest = {
  * Home / Folder Browser (ux-spec): one folder at a time, no library-import
  * ceremony. Recents, recursive toggle with a plain hint, type chips + custom
  * box, preflight report before the grid, and drag-drop explained honestly.
+ *
+ * Two drop lanes, on purpose (BUILD-NOTES "Drag-drop lane"):
+ *   * desktop app — the Rust shell hands over REAL absolute paths on
+ *     `metadesk://dropped-paths` (`onDroppedPaths` below); a drop fills the
+ *     path box and scans it, no retyping;
+ *   * browser / dev seam — Tauri is absent, the HTML5 drop handler below
+ *     explains honestly that browsers hide the absolute path, and the paste
+ *     box stays the way in.
  */
 export function Home() {
   const recents = useUiStore((s) => s.recents);
@@ -90,6 +99,29 @@ export function Home() {
     });
   };
 
+  // The desktop shell's drop lane: real absolute paths from Explorer (leaf
+  // 2.1.2). A drop behaves exactly like typing the path and pressing Scan —
+  // the subfolder toggle, type chips and custom extensions on screen all
+  // apply — and the honest browser notice (if showing) goes away, because it
+  // no longer applies. In a browser this subscription is a no-op.
+  useEffect(
+    () =>
+      onDroppedPaths((paths) => {
+        const dropped = paths[0];
+        if (dropped === undefined || dropped.trim() === '') return;
+        setDropNotice(false);
+        setFolder(dropped);
+        setSearchText('');
+        setRequest({
+          ...DEFAULT_REQUEST,
+          folder: dropped,
+          recursive,
+          extensions: effectiveExtensions,
+        });
+      }),
+    [recursive, effectiveExtensions, setSearchText],
+  );
+
   const openGrid = () => {
     if (request === null || scanResult === undefined) return;
     setScan(request, scanResult);
@@ -102,9 +134,9 @@ export function Home() {
     navigate('/browse');
   };
 
-  // Drag-drop honesty: browsers withhold absolute paths from web pages.
-  // The Tauri wrap (later leaf) provides real paths; until then the drop zone
-  // explains the situation and offers the path pattern to paste.
+  // Browser lane only: the desktop shell never delivers HTML5 drops (Tauri's
+  // own drag-drop handler replaces them and arrives through onDroppedPaths
+  // above), so this is the dev-seam honesty path.
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDropNotice(true);
@@ -152,23 +184,25 @@ export function Home() {
             </Button>
           </div>
 
-          {/* Drop zone, explained honestly */}
+          {/* Drop zone, explained honestly: the desktop app gets real paths,
+              the browser cannot — same zone, both truths. */}
           <div
             className="rounded-lg border border-dashed border-border px-4 py-3 text-xs text-muted-foreground"
             aria-label="Drag-and-drop zone"
           >
-            You can also drag a folder here — but browsers hide the folder's real location from
-            web pages, so MetaDesk can't get the full path that way yet. Drop anything to see the
-            pattern to paste, or type the path above. (The desktop-app wrap will make drops work
-            directly.)
+            Drag a folder here from File Explorer. In the MetaDesk desktop app the drop fills the
+            path box with the folder's real location and scans it. In a web browser that can't
+            work — browsers hide a folder's real location from web pages — so a browser drop shows
+            the pattern to paste instead. Typing or pasting the path always works.
           </div>
 
           {dropNotice && (
             <div className="rounded-lg border border-border bg-muted px-4 py-3 text-sm">
               <div className="font-medium">About that drop…</div>
               <p className="mt-1 text-muted-foreground">
-                Windows browsers only hand over the file name, not the absolute path — an honest
-                limit of the sandbox, not a bug. Paste the pattern below into the path box and
+                You're in a browser right now, and browsers only hand over the file name, not the
+                absolute path — an honest limit of the sandbox, not a bug. (The MetaDesk desktop
+                app doesn't have this limit.) Paste the pattern below into the path box and
                 replace the parts after the drive letter:
               </p>
               <div className="mt-2 flex items-center gap-2">

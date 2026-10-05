@@ -16,7 +16,9 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# "tray-icon" is D6's minimal chrome-only tray (TrayIconBuilder + menu). Still NO
+# "devtools" feature, no dialog plugin, no shell/opener/updater plugin anywhere.
+tauri = { version = "2", features = ["tray-icon"] }
 # Registered FIRST (pinned decision D5). No other plugins: no shell, no opener,
 # no updater, no dialog plugin (dialogs are plain Win32 MessageBoxW, see dialog.rs).
 tauri-plugin-single-instance = "2"
@@ -25,16 +27,21 @@ serde_json = "1"
 
 # Windows-only process/job plumbing: the Job Object that kernel-guarantees the
 # engine tree dies with the shell, the image-path checks that make the launch
-# sweep safe (never kill a foreign process), and the branded error dialogs.
-# MetaDesk is Windows-only by design (no target gate, no non-Windows stubs).
+# sweep safe (never kill a foreign process), the branded error dialogs, and the
+# Reopen/Quit crash dialog (TaskDialogIndirect needs Common Controls, which
+# tauri-build's default manifest already declares; CoInitializeEx is its COM
+# prerequisite). MetaDesk is Windows-only by design (no target gate, no
+# non-Windows stubs).
 [dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
     # CreateJobObjectW's SECURITY_ATTRIBUTES parameter pulls this in.
     "Win32_Security",
+    "Win32_System_Com",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_UI_Controls",
     "Win32_UI_WindowsAndMessaging",
 ]
 
