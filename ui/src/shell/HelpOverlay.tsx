@@ -98,6 +98,14 @@ const HELP_SECTIONS: Array<{ panel: string; lines: string[] }> = [
       'Unrecognized tokens become tag names in real exiftool — the GUI validates so nothing silently no-ops.',
     ],
   },
+  {
+    panel: 'Settings — Support (diagnostics bundle)',
+    lines: [
+      '"Create diagnostics bundle" gathers MetaDesk\'s own records into one small zip, saves it in MetaDesk\'s data folder (the exact path is shown as selectable text with a Copy button once it is built), and can also drop a copy into your browser\'s usual Downloads folder.',
+      'Inside: the tail of the change journal (file paths and the tag values MetaDesk wrote — never the photos themselves), the ExifTool engine version, the app and Node version numbers, and the data-folder location.',
+      'Nothing is sent anywhere by MetaDesk. The bundle stays on this computer until you choose to share it — attach it to an email or a support message yourself.',
+    ],
+  },
 ];
 
 export function HelpOverlay() {

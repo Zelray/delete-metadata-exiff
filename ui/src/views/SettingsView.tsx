@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Segmented } from '../components/ui/controls';
+import { SupportCard } from './Settings/SupportCard';
 import type { ThemeChoice } from '../state/store';
 import type { RecoveryFixResult, RecoveryScanReport } from '../write/types';
 
@@ -32,6 +33,7 @@ export function SettingsView() {
       <AppearanceCard />
       <SafetyFloorsCard />
       <RecoveryCard />
+      <SupportCard />
     </div>
   );
 }

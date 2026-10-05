@@ -50,6 +50,7 @@ import { registerThumbnailRoutes } from './routes/thumbnails.js';
 import { registerEventsRoute, SseHub } from './routes/events.js';
 import { registerWriteRoutes } from './routes/writes.js';
 import { registerRecoveryRoutes } from './routes/recovery.js';
+import { registerDiagnosticsRoutes } from './routes/diagnostics.js';
 
 export interface BuildServerOptions {
   config: MetaDeskConfig;
@@ -200,6 +201,12 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
   // state and the single-writer lock.
   registerWriteRoutes(app, { engine, dataDir: config.dataDir, hub });
   registerRecoveryRoutes(app, { dataDir: config.dataDir });
+  // Diagnostics support bundle (leaf 2.2.1) — rides the same request gates.
+  registerDiagnosticsRoutes(app, {
+    dataDir: config.dataDir,
+    executablePath: config.executablePath,
+    appVersion: config.serverVersion,
+  });
 
   await registerStaticUi(app, config, { token, version: config.serverVersion });
 

@@ -523,6 +523,73 @@ export function recoveryFix(action: RecoveryFixAction): Promise<RecoveryFixResul
   });
 }
 
+// --- Diagnostics (leaf 2.2.1) -----------------------------------------------
+
+export interface DiagnosticsBundleResult {
+  /** Object URL of the zip bytes (revoke it when the card goes away). */
+  blobUrl: string;
+  /** Filename from the server's Content-Disposition. */
+  filename: string;
+  /** Where the server ALSO wrote the file, from X-MetaDesk-Diagnostics-Path. */
+  savedPath: string | null;
+}
+
+/**
+ * GET /api/diagnostics/bundle — a plain <a download> link cannot send the
+ * X-MetaDesk-Token header (the same lesson as the thumbnail fetch), so the
+ * client fetches the bytes itself and hands back an object URL. The server
+ * has already saved the same bytes on disk; `savedPath` is where.
+ */
+export async function createDiagnosticsBundle(): Promise<DiagnosticsBundleResult> {
+  const headers: Record<string, string> = { Accept: 'application/zip' };
+  const token = readBootstrap().token;
+  if (token !== '') headers['X-MetaDesk-Token'] = token;
+
+  let response: Response;
+  try {
+    response = await fetch('/api/diagnostics/bundle', { headers });
+  } catch (cause) {
+    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let envelope: ApiError | undefined;
+    try {
+      envelope = text === '' ? undefined : (JSON.parse(text) as ApiError);
+    } catch {
+      envelope = undefined;
+    }
+    if (envelope !== undefined && typeof envelope === 'object' && 'code' in envelope && 'message' in envelope) {
+      throw new MetaApiError(response.status, envelope);
+    }
+    throw new TransportError(
+      response.status,
+      `The diagnostics bundle could not be created (HTTP ${response.status}).`,
+    );
+  }
+
+  const blob = await response.blob();
+  return {
+    blobUrl: URL.createObjectURL(blob),
+    filename: filenameFromDisposition(response.headers.get('content-disposition')),
+    savedPath: headerValue(response.headers.get('x-metadesk-diagnostics-path')),
+  };
+}
+
+/** `attachment; filename="x.zip"` -> x.zip (with a plain fallback name). */
+function filenameFromDisposition(value: string | null): string {
+  if (value !== null) {
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(value);
+    const name = match?.[1]?.trim();
+    if (name !== undefined && name.length > 0) return name;
+  }
+  return 'metadesk-diagnostics.zip';
+}
+
+function headerValue(value: string | null): string | null {
+  return value !== null && value.length > 0 ? value : null;
+}
+
 // --- SSE ------------------------------------------------------------------
 
 export type Unsubscribe = () => void;
