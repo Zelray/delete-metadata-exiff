@@ -346,7 +346,8 @@ async function run() {
     bail(`GET / -> ${index.status}; boot script missing from page`);
   }
   if (!indexHtml.includes(token)) bail('Served page does not carry the session token for the UI');
-  step('static-ui', 'status page with __METADESK__ boot script + token');
+  const uiMode = existsSync(path.join(APP_ROOT, 'ui', 'dist')) ? 'app bundle (ui/dist)' : 'built-in status page';
+  step('static-ui', `__METADESK__ boot script + token injected into ${uiMode}`);
 
   // ---- 14. graceful shutdown, no orphans ------------------------------------------------------------------------------
   child.stdin.end();
