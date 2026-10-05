@@ -260,3 +260,33 @@ two that bite hardest: **argv-array execution only, never shell strings**, and *
 modify `exiftool/` (repo reference clone), `vendor/**`, `shared/**`, or
 `server/src/engine/**`** — shared-contract changes go through the orchestrator only.
 Keep docs honest as work happens (STATUS = chart, HANDOFF = this file, README = Mike).
+
+## 8. Wave 6 + integration fixes (2026-10-05, recorded by the orchestrator)
+
+- **Leaf 1.2.1 (commit 593159c):** `app/scripts/verify-e2e.mjs` with subcommands
+  `unit | roundtrip | scrub | gps | all`. The `roundtrip` and `scrub` subcommands ARE
+  root gates G3/G4 (markers: "e2e roundtrip verification passed" / "e2e AI-scrub
+  verification passed"); `all` adds the Playwright matrix and prints "all e2e
+  verifications passed". The matrix drives the real launcher + built bundle headlessly
+  and writes 10 real-flow screenshots to `app/evidence/` (mirrored byte-identical to
+  `app/tests-e2e/__evidence-snapshot__/`, which is what git tracks).
+- **Two real product bugs the e2e matrix caught (unit-stubbed tests could not see
+  them), fixed by the orchestrator (commit f82066c) in `ui/src/api/client.ts`:**
+  (1) streaming `executeWrite` lacked `Content-Type: application/json`, so Fastify
+  never parsed the body and EVERY Edit/Batch write 400'd in the real browser;
+  (2) `getThumbnail` JSON-parsed an endpoint that streams raw JPEG bytes, so the grid
+  always showed the placeholder — it now fetches bytes (an `<img>` cannot send the
+  token header) and returns a blob URL. The matrix asserts both fixed behaviors.
+- **Cancel wiring:** BatchPanel Cancel button (visible only while a batch streams),
+  ResultsReport not-attempted rows (leaf 1.2.1, transferred ownership).
+- **Orchestrator housekeeping commits:** b4ef514 (mount write/recovery routes in
+  index.ts), 3909b2f (gitignore vendored exiftool runtime Data caches), f82066c
+  (the two client fixes), plus the docs/evidence commit recorded after this section.
+- **QA verdicts (Agency gate):** Evidence Collector — EVIDENCE SUFFICIENT (7/10 frames
+  fully prove their claims; 3 partial with cosmetic framing notes, listed in STATUS
+  next steps). Reality Checker — NEEDS WORK on first audit, with explicit closing
+  conditions (fill manual review gates, commit refreshed snapshots, update docs through
+  wave 6, deliver the decision brief); all conditions closed by the orchestrator — see
+  `.unlazy/metagui/status.log` and the confirmation re-audit verdict.
+- **Every verify gate in one place:** `verify-engine|server|ui|write|ui-write|launch|e2e`
+  (§3 table gains one row: `verify-e2e.mjs` — subcommands as above, ~5 min for `all`).
