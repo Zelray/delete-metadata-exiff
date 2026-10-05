@@ -5,3 +5,6 @@ data/*
 !data/.gitkeep
 evidence/
 *.log
+# exiftool runtime-generated Perl caches inside the vendored engine (never commit).
+vendor/exiftool/exiftool_files/lib/Data/
+vendor/exiftool/exiftool_files/lib/auto/Data/
