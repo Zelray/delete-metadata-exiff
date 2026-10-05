@@ -7,7 +7,8 @@
  *
  * Flows + evidence (screenshots land in app/evidence/, mirrored to
  * app/tests-e2e/__evidence-snapshot__/ because app/evidence/ is gitignored):
- *   01-home            Home / folder browser
+ *   01-home            Home POST-SCAN: the Recent folders strip AND the
+ *                      Preflight report both fully in frame (leaf 2.3.1 retake)
  *   02-grid            grid with thumbnails, hostile filenames, GPS badge
  *   03-detail          detail viewer, grouped tags, GPS card
  *   04-save-review     the mandatory Save Review gate with the old -> new diff
@@ -15,11 +16,24 @@
  *   06-scrub-confirm   the typed-phrase gate (button refuses without it)
  *   07-results         the three-valued results report (scrub run)
  *   08-history         journal history with the verified-backup chip
- *   09-console         read-only console: a read runs, a write is refused
- *   10-settings        engine card + the locked safety floors
+ *   09-console         read-only console: the real read's OUTPUT CARD in frame
+ *                      (leaf 2.3.1 retake); the write refusal is asserted in
+ *                      the same flow before the capture
+ *   10-settings        FULL-PAGE settings: engine card, all FIVE locked safety
+ *                      floors, recovery + the Support diagnostics card
+ *                      (leaf 2.3.1 retake)
  * API-level cases (no browser): a >240-character path is refused with the
  * plain-English message; a genuinely locked file fails per-file while the
  * rest of its batch updates and verifies.
+ *
+ * Leaf 2.3.1 (screenshot polish): only the three frames the wave-6 Evidence
+ * Collector flagged are re-shot. The seven ACCEPTED frames keep their
+ * committed bytes — every flow and assertion still runs, but instead of
+ * re-rendering them the matrix restores the committed PNG into app/evidence/
+ * (a re-render can never be byte-identical: the fixtures' temp path and file
+ * timestamps change every run). Pass --reshoot-all to force a full re-shoot.
+ * The capture manifest (MANIFEST.txt: per-frame capture date + claim) is
+ * regenerated into the snapshot after the mirror.
  *
  * Run: node app/tests-e2e/matrix.mjs  (builds nothing — run verify-e2e.mjs
  * all, or build app/ui first). Exits 0 only when every check passed.
@@ -49,6 +63,70 @@ import {
 const EVIDENCE_DIR = path.join(APP_ROOT, 'evidence');
 const SNAPSHOT_DIR = path.join(APP_ROOT, 'tests-e2e', '__evidence-snapshot__');
 const OVERALL_TIMEOUT_MS = 6 * 60 * 1000;
+
+// ---- leaf 2.3.1: the retake contract ------------------------------------------
+// The wave-6 Evidence Collector accepted seven frames and flagged exactly these
+// three as cosmetic-framing retakes. Only these are re-rendered; the accepted
+// seven keep their committed bytes (see shot() below).
+const RETAKE_SET = new Set(['01-home.png', '09-console.png', '10-settings.png']);
+const RESHOOT_ALL = process.argv.includes('--reshoot-all');
+/** The wave-6 capture date of record for the seven accepted frames. */
+const WAVE6_CAPTURE_DATE = '2026-10-05';
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
+/** The claim each frame proves — one MANIFEST.txt line per frame. */
+const FRAME_CLAIMS = [
+  {
+    file: '01-home.png',
+    claim:
+      'Home POST-SCAN: the Recent folders strip and the Preflight report card are both fully in frame before the grid opens (read-only, nothing written).',
+  },
+  {
+    file: '02-grid.png',
+    claim:
+      'Folder grid: hostile filenames (spaces/CJK/accents/%/#/=) render as real cards, the GPS badge rides in from the scan on photo.jpg, and the thumbnail endpoint streams a real JPEG the grid renders.',
+  },
+  {
+    file: '03-detail.png',
+    claim:
+      'Detail viewer: grouped tag rows at All-tags depth plus the GPS card with its Open-map link on a GPS-bearing photo.',
+  },
+  {
+    file: '04-save-review.png',
+    claim:
+      'The mandatory Save Review gate: the honesty line ("Nothing has been written yet"), the old -> new per-tag diff, the exact argv preview and the backup statement, under the amber WRITE UNLOCKED chip.',
+  },
+  {
+    file: '05-scrub-findings.png',
+    claim:
+      'AI-scrub findings: the removable A1111 tags behind the per-file disclosure, the CANNOT-be-removed section for ComfyUI Prompt/Workflow chunks, and the hidden-alpha honesty banner.',
+  },
+  {
+    file: '06-scrub-confirm.png',
+    claim:
+      'The typed-phrase gate captured mid-refusal: the wrong-case phrase is typed and the Remove button is still disabled.',
+  },
+  {
+    file: '07-results.png',
+    claim:
+      'The three-valued results report after the scrub: outcome counts, the "could NOT be removed" honesty row and the AI-scrub extras section.',
+  },
+  {
+    file: '08-history.png',
+    claim:
+      'Journal history: the scrub batch card with its verified-backup chip and the expanded mode: scrub row - the durable record undo is built on.',
+  },
+  {
+    file: '09-console.png',
+    claim:
+      'Read-only console: a REAL read has run and its Output card is fully in frame (vendored exiftool version output). The write-shaped command is refused by the validator in the same flow (asserted before the capture); the refusal state clears the output card by design, so one frame cannot show both.',
+  },
+  {
+    file: '10-settings.png',
+    claim:
+      'FULL-PAGE Settings: engine handshake verified, appearance, all FIVE locked-ON safety floors, the recovery card and the Support diagnostics card (leaf 2.2.1) - nothing cut at the fold.',
+  },
+];
 
 const watchdog = setTimeout(() => {
   process.stdout.write('e2e matrix FAILED\n\noverall watchdog fired (6 min)\n');
@@ -208,24 +286,53 @@ async function run() {
   page.setDefaultTimeout(20_000);
 
   const shot = async (name) => {
-    await page.screenshot({ path: path.join(EVIDENCE_DIR, name), fullPage: false });
-    const size = existsSync(path.join(EVIDENCE_DIR, name))
-      ? (readFileSync(path.join(EVIDENCE_DIR, name))?.length ?? 0)
-      : 0;
+    const target = path.join(EVIDENCE_DIR, name);
+    // Leaf 2.3.1: the seven ACCEPTED frames keep their committed bytes. The
+    // flow above still ran every assertion; instead of re-rendering the frame
+    // (which can never be byte-identical — the fixtures' temp path and file
+    // timestamps change every run) the committed PNG is restored verbatim so
+    // the mirror diff stays exactly the retake set.
+    if (!RETAKE_SET.has(name) && !RESHOOT_ALL && existsSync(path.join(SNAPSHOT_DIR, name))) {
+      await cp(path.join(SNAPSHOT_DIR, name), target);
+      step(`screenshot ${name}`, 'preserved - accepted frame, committed bytes restored (assertions still ran)');
+      return;
+    }
+    await page.screenshot({ path: target, fullPage: false });
+    const size = existsSync(target) ? (readFileSync(target)?.length ?? 0) : 0;
     if (size < 20_000) fail(`Screenshot ${name} is suspiciously small (${size} bytes)`);
-    step(`screenshot ${name}`, `${Math.round(size / 1024)} KB`);
+    step(`screenshot ${name}`, `${Math.round(size / 1024)} KB (retaken)`);
   };
 
-  // 01 — Home.
+  // 01 — Home, POST-SCAN (leaf 2.3.1 retake). The wave-6 frame showed the
+  // empty pre-scan state: no recents strip, no preflight report. Drive the
+  // real scan -> open-grid -> back-through-recents path so BOTH the Recent
+  // folders strip and the Preflight card share the frame, then size the
+  // viewport so neither is cut.
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await expectVisible(page.getByRole('heading', { name: 'Open a folder' }), 'home heading');
   await expectVisible(page.getByLabel('Absolute folder path'), 'folder path input');
-  await shot('01-home.png');
-
-  // Scan the fixture folder; the preflight report is the honest first contact.
   await page.getByLabel('Absolute folder path').fill(photos.dir);
   await page.getByRole('button', { name: 'Scan', exact: true }).click();
   await expectVisible(page.getByText("Preflight — what's in there"), 'preflight report');
+  await page.getByRole('button', { name: /Open grid \(/ }).click();
+  await expectVisible(page.getByRole('list').first(), 'the grid');
+  // Back to Home through the app's own Tools rail; clicking the recent chip
+  // re-runs the scan, which is what puts the recents strip and the preflight
+  // report on screen together — the honest post-scan state.
+  await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'Browse' }).click();
+  const recentChip = page
+    .locator('section[aria-label="Recent folders"] button', { hasText: 'metadesk-matrix-photos-' })
+    .first();
+  await expectVisible(recentChip, 'the Recent folders strip');
+  await recentChip.click();
+  await expectVisible(page.getByText("Preflight — what's in there"), 'preflight report next to the recents strip');
+  await sizeViewportToContent(page, 'the post-scan Home page');
+  await expectInViewport(page.locator('section[aria-label="Recent folders"]'), 'Recent folders strip', page);
+  await expectInViewport(page.locator('section[aria-label="Preflight report"]'), 'Preflight report card', page);
+  await shot('01-home.png');
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // Continue into the grid through the same preflight card.
   await page.getByRole('button', { name: /Open grid \(/ }).click();
   await expectVisible(page.getByRole('list').first(), 'the grid');
 
@@ -401,7 +508,12 @@ async function run() {
   await expectVisible(page.getByText(/mode: scrub/), 'expanded batch mode row');
   await shot('08-history.png');
 
-  // 09 — Console: a read runs; a write-shaped command is refused loudly.
+  // 09 — Console (leaf 2.3.1 retake): a read runs and its OUTPUT CARD must be
+  // in frame; a write-shaped command is refused loudly. The refusal state and
+  // the output card are mutually exclusive in the UI (a failed run clears the
+  // output card), so the flow asserts the refusal first and then re-runs the
+  // real read — the frame proves the output card, the assertions prove the
+  // refusal.
   await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'Console' }).click();
   const consoleInput = page.getByLabel('exiftool arguments');
   await consoleInput.fill('-ver');
@@ -413,14 +525,33 @@ async function run() {
   await page.getByRole('button', { name: 'Run', exact: true }).click();
   await expectVisible(page.getByText('The validator refused this command.'), 'validator refusal');
   await expectVisible(page.getByText('Nothing ran, nothing changed.'), 'refusal honesty line');
+  // Back to the read: the Output card is what the wave-6 retake asks the frame
+  // to prove.
+  await consoleInput.fill('-ver');
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await expectVisible(page.getByText('Output', { exact: true }), 'console output card back in frame');
+  await expectText(output, '13.', 'exiftool version in console output');
+  await expectInViewport(page.getByText('Output', { exact: true }).first(), 'Output card heading', page);
+  await expectInViewport(output, 'Output card body (real exiftool output)', page);
   await shot('09-console.png');
 
-  // 10 — Settings: engine verified + the locked safety floors.
+  // 10 — Settings, FULL PAGE (leaf 2.3.1 retake): engine verified, ALL FIVE
+  // locked safety floors, recovery and the Support diagnostics card — the
+  // wave-6 frame cut the floors at the fold. The work zone scrolls internally
+  // (so Playwright's fullPage cannot see past the fold): size the viewport to
+  // the content and assert every card sits fully inside the frame.
   await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'Settings' }).click();
   await expectVisible(page.getByText('verified — read commands run'), 'engine handshake chip');
   const lockedFloors = await page.getByText('locked ON').count();
   if (lockedFloors < 5) fail(`Expected 5 locked safety floors, found ${lockedFloors}`);
+  await expectVisible(page.getByRole('heading', { name: 'Support' }), 'the Support diagnostics card');
+  await sizeViewportToContent(page, 'the full Settings page');
+  for (const cardLabel of ['Engine', 'Appearance', 'Safety floors', 'Recovery', 'Support']) {
+    await expectInViewport(page.locator(`section[aria-label="${cardLabel}"]`), `${cardLabel} card`, page);
+  }
+  if ((await page.getByText('locked ON').count()) < 5) fail('The viewport resize left a locked safety floor unseen');
   await shot('10-settings.png');
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   const realErrors = consoleErrors.filter((e) => !/favicon/i.test(e));
   if (realErrors.length > 0) fail(`Page errors during the flows: ${realErrors.slice(0, 3).join(' | ')}`);
@@ -507,11 +638,40 @@ async function run() {
   await rm(SNAPSHOT_DIR, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(SNAPSHOT_DIR, { recursive: true });
   await cp(EVIDENCE_DIR, SNAPSHOT_DIR, { recursive: true });
-  step('evidence', `screenshots mirrored to ${path.relative(APP_ROOT, SNAPSHOT_DIR)}`);
+  await writeManifest();
+  step('evidence', `screenshots + capture manifest mirrored to ${path.relative(APP_ROOT, SNAPSHOT_DIR)}`);
 
   // ---- graceful stop through the launcher's own channel ----------------------
   await stopStack();
   step('stop', 'launcher stdin closed; server stopped cleanly');
+}
+
+// ---- capture manifest ------------------------------------------------------------
+
+/**
+ * Regenerate MANIFEST.txt in the snapshot: one line per frame with its size,
+ * capture date and the claim it proves; the retake set is marked `retaken`
+ * with this run's date. Verified by `verify-e2e.mjs evidence` (leaf 2.3.1 G2).
+ */
+async function writeManifest() {
+  const retakenDate = todayIso();
+  const retakenNames = [...RETAKE_SET].sort().join('/');
+  const lines = [
+    'MetaDesk evidence snapshot - regenerated by verify-e2e.mjs all (Playwright matrix)',
+    `Captured: ${retakenDate} - leaf 2.3.1 retakes (${retakenNames} re-shot this run); the other frames are the wave-6 accepted captures restored byte-identical (flows re-run + re-asserted, PNG writes skipped)`,
+    'Source flows: real launcher + built ui/dist + vendored exiftool 13.59; no mocks.',
+    'QA verdict: Evidence Collector EVIDENCE SUFFICIENT (2026-10-05) with three cosmetic-framing retakes flagged - taken here; see .unlazy/metagui/status.log',
+    '',
+  ];
+  for (const { file, claim } of FRAME_CLAIMS) {
+    const filePath = path.join(SNAPSHOT_DIR, file);
+    if (!existsSync(filePath)) fail(`The evidence snapshot is missing ${file}`);
+    const bytes = readFileSync(filePath).length;
+    const captured = RETAKE_SET.has(file) ? retakenDate : WAVE6_CAPTURE_DATE;
+    const retaken = RETAKE_SET.has(file) ? `  retaken ${retakenDate}` : '';
+    lines.push(`${file}  ${bytes} bytes  captured ${captured}${retaken}  proves: ${claim}`);
+  }
+  await writeFile(path.join(SNAPSHOT_DIR, 'MANIFEST.txt'), `${lines.join('\n')}\n`, 'utf8');
 }
 
 // ---- helpers -------------------------------------------------------------------
@@ -535,6 +695,52 @@ async function expectVisible(locator, label, timeout = 20_000) {
 async function expectText(locator, needle, label) {
   const text = (await locator.textContent().catch(() => '')) ?? '';
   if (!text.includes(needle)) fail(`Expected ${label} to contain "${needle}", got "${text.slice(0, 120)}"`);
+}
+
+/** Assert a locator's box sits fully inside the viewport — nothing cut at an edge. */
+async function expectInViewport(locator, label, page) {
+  const box = await locator.boundingBox();
+  if (box === null) fail(`${label} has no layout box to frame`);
+  const viewport = page.viewportSize();
+  const cut =
+    box.y < 0 ||
+    box.x < 0 ||
+    box.y + box.height > viewport.height ||
+    box.x + box.width > viewport.width;
+  if (cut) {
+    fail(
+      `${label} is cut at the frame edge (box y=${Math.round(box.y)} h=${Math.round(box.height)} in a ${viewport.width}x${viewport.height} viewport)`,
+    );
+  }
+}
+
+/**
+ * Size the viewport so the work zone's whole content is visible without
+ * scrolling. The app scrolls <main> internally, so Playwright's fullPage
+ * capture cannot see past the fold — growing the viewport is the honest way
+ * to frame a whole page. Width stays 1280; only the height grows.
+ */
+async function sizeViewportToContent(page, label) {
+  const metrics = await page.evaluate(() => {
+    const main = document.querySelector('main');
+    if (main === null) return null;
+    const rect = main.getBoundingClientRect();
+    return { top: rect.top, contentHeight: main.scrollHeight, below: window.innerHeight - rect.bottom };
+  });
+  if (metrics === null) fail('The app shell has no <main> work zone to size against');
+  const needed = Math.ceil(metrics.top + metrics.contentHeight + metrics.below) + 8;
+  const height = Math.min(Math.max(needed, 800), 2600);
+  await page.setViewportSize({ width: 1280, height });
+  const after = await page.evaluate(() => {
+    const main = document.querySelector('main');
+    return { scrollHeight: main.scrollHeight, clientHeight: main.clientHeight };
+  });
+  if (after.scrollHeight > after.clientHeight) {
+    fail(
+      `Even at ${height}px the viewport cannot show ${label} without scrolling (content ${after.scrollHeight}px > visible ${after.clientHeight}px; cap 2600)`,
+    );
+  }
+  step('viewport', `${label} framed at 1280x${height} (nothing cut)`);
 }
 
 async function pollPortfile(portfilePath, timeoutMs) {

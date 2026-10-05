@@ -24,9 +24,16 @@
  *             {destructive:{scope:"gps"}} preview, the typed-phrase execute,
  *             an external read proving zero GPS keys, then a byte-identical
  *             undo.
+ *   evidence  LEAF 2.3.1 G2: the evidence snapshot is consistent —
+ *             app/tests-e2e/__evidence-snapshot__/ is byte-identical to
+ *             app/evidence/ file-by-file (sha256, exactly the 10 frames of
+ *             record on both sides) and MANIFEST.txt lists EVERY frame with
+ *             its capture date and the claim it proves, the three leaf-2.3.1
+ *             retakes (01/09/10) marked `retaken`. No app boot, no browser.
  *   all       unit + roundtrip + scrub + gps + the Playwright matrix
  *             (app/tests-e2e/matrix.mjs: real launcher + built UI bundle +
- *             screenshots), and prints the overall marker.
+ *             screenshots) + the same evidence-snapshot check, and prints the
+ *             overall marker.
  *
  * Success markers, printed EXACTLY as the FIRST line of stdout:
  *
@@ -34,6 +41,7 @@
  *   e2e AI-scrub verification passed
  *   e2e gps-strip verification passed
  *   e2e unit verification passed
+ *   evidence snapshot verification passed
  *   all e2e verifications passed
  *
  * Any failure prints diagnostics and exits 1. Node built-ins only; every
@@ -59,11 +67,11 @@ const UI_DIR = path.join(APP_ROOT, 'ui');
 const TESTS_E2E_DIR = path.join(APP_ROOT, 'tests-e2e');
 const UI_DIST_INDEX = path.join(UI_DIR, 'dist', 'index.html');
 
-const SUBCOMMANDS = new Set(['unit', 'roundtrip', 'scrub', 'gps', 'all']);
+const SUBCOMMANDS = new Set(['unit', 'roundtrip', 'scrub', 'gps', 'evidence', 'all']);
 const requested = process.argv[2] ?? 'all';
 if (!SUBCOMMANDS.has(requested)) {
   process.stdout.write(
-    `e2e verification FAILED\n\nunknown subcommand "${requested}" — expected one of: unit, roundtrip, scrub, gps, all\n`,
+    `e2e verification FAILED\n\nunknown subcommand "${requested}" — expected one of: unit, roundtrip, scrub, gps, evidence, all\n`,
   );
   process.exit(1);
 }
@@ -869,6 +877,102 @@ function runChild(command, args, cwd, label, opts = {}) {
   });
 }
 
+// ---- subcommand: evidence (leaf 2.3.1 G2) ----------------------------------------
+
+const EVIDENCE_DIR = path.join(APP_ROOT, 'evidence');
+const EVIDENCE_SNAPSHOT_DIR = path.join(TESTS_E2E_DIR, '__evidence-snapshot__');
+const EVIDENCE_MANIFEST = path.join(EVIDENCE_SNAPSHOT_DIR, 'MANIFEST.txt');
+/** The frame set of record (matrix.mjs FRAME_CLAIMS order). */
+const EVIDENCE_FRAMES = [
+  '01-home.png',
+  '02-grid.png',
+  '03-detail.png',
+  '04-save-review.png',
+  '05-scrub-findings.png',
+  '06-scrub-confirm.png',
+  '07-results.png',
+  '08-history.png',
+  '09-console.png',
+  '10-settings.png',
+];
+/** The frames the wave-6 Evidence Collector flagged; leaf 2.3.1 re-shot them. */
+const RETAKEN_FRAMES = new Set(['01-home.png', '09-console.png', '10-settings.png']);
+
+/**
+ * The committed mirror must be byte-identical to app/evidence/ (file-by-file
+ * sha256, exactly the frame set of record on both sides), and MANIFEST.txt
+ * must list every frame with its capture date, its size and the claim it
+ * proves — the retaken frames marked `retaken`. Pure file reads: no app boot.
+ */
+function verifyEvidenceSnapshot() {
+  if (!existsSync(EVIDENCE_DIR)) fail(`The evidence directory is missing: ${EVIDENCE_DIR}`);
+  if (!existsSync(EVIDENCE_SNAPSHOT_DIR)) fail(`The committed mirror is missing: ${EVIDENCE_SNAPSHOT_DIR}`);
+  if (!existsSync(EVIDENCE_MANIFEST)) fail(`The capture manifest is missing: ${EVIDENCE_MANIFEST}`);
+
+  const evidenceFiles = readdirSync(EVIDENCE_DIR).sort();
+  const snapshotFiles = readdirSync(EVIDENCE_SNAPSHOT_DIR).sort();
+  const expectedEvidence = [...EVIDENCE_FRAMES].sort();
+  const expectedSnapshot = [...expectedEvidence, 'MANIFEST.txt'].sort();
+  const listMismatch = (label, found, expected) =>
+    `The ${label} does not hold exactly the frame set of record.\n  found:    ${found.join(', ')}\n  expected: ${expected.join(', ')}`;
+  if (evidenceFiles.join(',') !== expectedEvidence.join(',')) {
+    fail(listMismatch('evidence directory (app/evidence)', evidenceFiles, expectedEvidence));
+  }
+  if (snapshotFiles.join(',') !== expectedSnapshot.join(',')) {
+    fail(listMismatch('committed mirror (__evidence-snapshot__)', snapshotFiles, expectedSnapshot));
+  }
+
+  // Byte-identical mirror, frame by frame.
+  for (const frame of EVIDENCE_FRAMES) {
+    const live = path.join(EVIDENCE_DIR, frame);
+    const mirrored = path.join(EVIDENCE_SNAPSHOT_DIR, frame);
+    const liveHash = sha256File(live);
+    const mirroredHash = sha256File(mirrored);
+    if (liveHash !== mirroredHash) {
+      fail(`The mirror is not byte-identical for ${frame}\n  evidence ${liveHash}\n  mirror   ${mirroredHash}`);
+    }
+    if (readFileSync(live).length < 20_000) fail(`${frame} is suspiciously small (${readFileSync(live).length} bytes)`);
+  }
+  step('mirror', `all ${EVIDENCE_FRAMES.length} frames sha256-identical between app/evidence and the committed mirror`);
+
+  // MANIFEST.txt: every frame with capture date + size + claim; retakes marked.
+  const manifestText = readFileSync(EVIDENCE_MANIFEST, 'utf8');
+  const isoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+  const retakenSeen = [];
+  for (const frame of EVIDENCE_FRAMES) {
+    const actualBytes = readFileSync(path.join(EVIDENCE_SNAPSHOT_DIR, frame)).length;
+    const line = manifestText.split(/\r?\n/).find((l) => l.startsWith(`${frame}  `));
+    if (line === undefined) fail(`MANIFEST.txt has no entry for ${frame}`);
+    const match = line.match(
+      new RegExp(
+        `^${frame.replace(/[.]/g, '\\.')}  (\\d+) bytes  captured (\\d{4}-\\d{2}-\\d{2})(  retaken (\\d{4}-\\d{2}-\\d{2}))?  proves: (.+)$`,
+      ),
+    );
+    if (match === null) {
+      fail(
+        `MANIFEST.txt's ${frame} entry does not read "<file>  <bytes> bytes  captured <YYYY-MM-DD>[  retaken <YYYY-MM-DD>]  proves: <claim>":\n  ${line}`,
+      );
+    }
+    const [, bytes, capturedDate, , retakenDate, claim] = match;
+    if (Number.parseInt(bytes, 10) !== actualBytes) {
+      fail(`MANIFEST.txt says ${frame} is ${bytes} bytes but the mirrored file is ${actualBytes} bytes`);
+    }
+    if (!isoDate(capturedDate)) fail(`MANIFEST.txt's ${frame} capture date is not a real date: ${capturedDate}`);
+    if (claim.trim().length < 20) fail(`MANIFEST.txt's ${frame} claim is too thin to be the claim it proves: "${claim}"`);
+    const mustBeRetaken = RETAKEN_FRAMES.has(frame);
+    if (mustBeRetaken) {
+      if (retakenDate === undefined) fail(`MANIFEST.txt does not mark the retaken frame ${frame} with a retaken date`);
+      if (!isoDate(retakenDate)) fail(`MANIFEST.txt's ${frame} retaken date is not a real date: ${retakenDate}`);
+      retakenSeen.push(`${frame} (captured ${capturedDate}, retaken ${retakenDate})`);
+    } else if (retakenDate !== undefined) {
+      fail(`MANIFEST.txt marks accepted frame ${frame} as retaken — only 01/09/10 were retaken`);
+    }
+  }
+  step('manifest', `every frame listed with capture date + claim; retakes: ${retakenSeen.join('; ')}`);
+}
+
+
+
 // ---- dispatch (last: every declaration above must be initialized) --------------
 
 try {
@@ -884,6 +988,9 @@ try {
   } else if (requested === 'gps') {
     await runGps();
     finish('e2e gps-strip verification passed');
+  } else if (requested === 'evidence') {
+    verifyEvidenceSnapshot();
+    finish('evidence snapshot verification passed');
   } else {
     await runUnit();
     await runRoundtrip();
@@ -891,6 +998,7 @@ try {
     await runGps();
     await buildUiBundle();
     await runMatrix();
+    verifyEvidenceSnapshot();
     finish('all e2e verifications passed');
   }
 } catch (error) {
