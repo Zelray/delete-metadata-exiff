@@ -6,12 +6,12 @@ import { useQuery } from '@tanstack/react-query';
 import type {
   FolderScanRequest,
   FolderScanResult,
-  HealthInfo,
   MetadataDepth,
   MetadataPayload,
   ThumbnailInfo,
 } from '@metadesk/shared';
 import { getHealth, getMetadata, getThumbnail, scanFolder } from '../api/client';
+import type { HealthWithWrite } from '../write/types';
 
 export const queryKeys = {
   health: ['health'] as const,
@@ -20,8 +20,9 @@ export const queryKeys = {
   thumbnail: (path: string) => ['thumbnail', path] as const,
 };
 
+/** /api/health includes the additive writeUnlocked/mode fields (wave 3). */
 export function useHealth() {
-  return useQuery<HealthInfo>({
+  return useQuery<HealthWithWrite>({
     queryKey: queryKeys.health,
     queryFn: getHealth,
     staleTime: 30_000,

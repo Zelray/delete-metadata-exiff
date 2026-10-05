@@ -1,20 +1,68 @@
-import { useHealth } from '../state/queries';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { lockSession, unlockSession } from '../api/client';
+import { queryKeys, useHealth } from '../state/queries';
 import { useUiStore } from '../state/store';
+import { Button } from '../components/ui/button';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ErrorBanner } from '../components/ErrorBanner';
 
 /**
  * The safety centerpiece (ux-spec): mode is never ambiguous. Every launch is
  * READ-ONLY (calm chip); unlocking writes is a deliberate, session-scoped act
- * that shifts the whole frame amber. The unlock control is rendered but
- * disabled in this leaf — write mode arrives later, and the nav stays honest.
+ * behind a plain-English confirm, and the whole frame shifts amber while
+ * unlocked (the amber border itself is AppShell's). Health is the truth — the
+ * server's additive `writeUnlocked` field — and this banner mirrors it into
+ * the store so every other surface reads the same answer.
  */
 export function ModeBanner() {
   const { data: health } = useHealth();
   const writeUnlocked = useUiStore((s) => s.writeUnlocked);
+  const setWriteUnlocked = useUiStore((s) => s.setWriteUnlocked);
+  const queryClient = useQueryClient();
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  // Health is the server's word. Mirror it (additive writeUnlocked field).
+  const serverUnlocked = health?.writeUnlocked;
+  useEffect(() => {
+    if (typeof serverUnlocked === 'boolean') setWriteUnlocked(serverUnlocked);
+  }, [serverUnlocked, setWriteUnlocked]);
 
   const degraded = health !== undefined && health.readOnlyFallback;
   const engineDown = health !== undefined && !health.ok;
+  const locked = !writeUnlocked || degraded || engineDown;
 
-  const mode = writeUnlocked && !degraded && !engineDown ? 'unlocked' : 'read-only';
+  const doUnlock = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await unlockSession();
+      setWriteUnlocked(true);
+      setConfirmOpen(false);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doLock = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await lockSession();
+      setWriteUnlocked(false);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="flex items-center gap-2">
@@ -28,7 +76,7 @@ export function ModeBanner() {
           </span>
         </span>
       )}
-      {mode === 'read-only' ? (
+      {locked ? (
         <span
           className="tip inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
           aria-label="Mode: read-only"
@@ -36,8 +84,9 @@ export function ModeBanner() {
           <span className="h-2 w-2 rounded-full bg-success" aria-hidden="true" />
           Read-only
           <span className="tip-body">
-            MetaDesk is viewing. Nothing on disk can change. Unlocking writes (a deliberate,
-            session-only act) arrives with the edit features.
+            {degraded
+              ? 'MetaDesk is viewing with a degraded engine — nothing on disk can change.'
+              : 'MetaDesk is viewing. Nothing on disk can change until you deliberately unlock writing for this session.'}
           </span>
         </span>
       ) : (
@@ -47,16 +96,67 @@ export function ModeBanner() {
         >
           <span className="h-2 w-2 rounded-full bg-warning-foreground" aria-hidden="true" />
           Write unlocked
+          <span title="Writing stays unlocked only for this session. Every write still shows you a diff first and keeps a verified backup.">
+            · session only
+          </span>
         </span>
       )}
-      <button
-        type="button"
-        disabled
-        title="Write unlock arrives with the edit features. Until then every session is read-only."
-        className="rounded px-1.5 py-1 text-[11px] text-muted-foreground/60 cursor-not-allowed"
+
+      {locked ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy || degraded || engineDown}
+          onClick={() => setConfirmOpen(true)}
+          title={
+            degraded || engineDown
+              ? 'Unlocking needs a verified engine.'
+              : 'Unlock writing for this session — deliberately, and only after reading what it means.'
+          }
+        >
+          Unlock
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => void doLock()}
+          title="Lock writing again — back to the read-only default. Always safe."
+        >
+          Lock
+        </Button>
+      )}
+
+      {error !== null && (
+        <div className="absolute right-3 top-12 z-40 w-96">
+          <ErrorBanner error={error} context="Changing write mode" onRetry={() => setError(null)} />
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Unlock writing for this session?"
+        confirmLabel="Unlock writing"
+        cancelLabel="Stay read-only"
+        danger
+        onConfirm={() => void doUnlock()}
+        onCancel={() => setConfirmOpen(false)}
       >
-        {mode === 'read-only' ? 'Unlock' : 'Lock'}
-      </button>
+        <p>
+          Unlocking makes it <strong>possible</strong> for MetaDesk to change your files. What does
+          not change:
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>Every write still shows you a side-by-side diff first — nothing moves without you reading it.</li>
+          <li>Every write keeps a verified backup copy of each file before touching it.</li>
+          <li>Everything lands in History and can be undone.</li>
+        </ul>
+        <p>
+          This lasts <strong>only for this session</strong> — closing MetaDesk returns you to
+          read-only automatically.
+        </p>
+      </ConfirmDialog>
     </div>
   );
 }

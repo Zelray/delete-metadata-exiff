@@ -12,37 +12,31 @@ interface NavItem {
   route: Route;
   label: string;
   hint: string;
-  /** Shown with a "soon" marker until its leaf lands — the nav stays honest. */
-  deferred?: boolean;
 }
 
 const NAV: NavItem[] = [
   { route: '/', label: 'Browse', hint: 'Pick a folder and scan it' },
+  { route: '/edit', label: 'Edit', hint: 'Change fields on the selection' },
+  { route: '/batch', label: 'Batch apply', hint: 'One set of edits, many files' },
+  { route: '/scrub', label: 'AI scrub', hint: 'Detect and remove AI-generation metadata' },
   { route: '/console', label: 'Console', hint: 'Raw read commands, validator-gated' },
-  {
-    route: '/history',
-    label: 'History',
-    hint: 'Every change with its backup proof',
-    deferred: true,
-  },
-  {
-    route: '/settings',
-    label: 'Settings',
-    hint: 'Engine path, defaults, safety floors',
-    deferred: true,
-  },
+  { route: '/history', label: 'History', hint: 'Every change with its backup proof' },
+  { route: '/settings', label: 'Settings', hint: 'Engine, defaults, safety floors' },
 ];
 
 /**
  * The three-zone frame (ux-spec): left rail for navigation, center for the
  * grid/detail work, one persistent bottom drawer for the Command Preview.
- * Every element has exactly one home so nothing ever moves.
+ * Every element has exactly one home so nothing ever moves. While writing is
+ * unlocked the whole frame gains an amber border — the danger state reads
+ * from across the room.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const route = useRoute();
   const setHelpOpen = useUiStore((s) => s.setHelpOpen);
   const helpOpen = useUiStore((s) => s.helpOpen);
   const scanResult = useUiStore((s) => s.scanResult);
+  const writeUnlocked = useUiStore((s) => s.writeUnlocked);
 
   // Global keyboard: F1 opens plain-English help for the focused panel.
   useEffect(() => {
@@ -60,6 +54,14 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
+      {/* Amber frame while writes are unlocked — visible from across the room */}
+      {writeUnlocked && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none fixed inset-0 z-40 border-2 border-warning/80"
+        />
+      )}
+
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-card px-3">
         <div className="flex items-baseline gap-2 pr-2">
@@ -91,12 +93,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         {/* Global file search (filters the grid's filenames) */}
         <TopBarSearch />
 
-        {/* Always-visible Undo (arrives with the write journal) */}
+        {/* Always-visible Undo — one click to the journal-backed History */}
         <button
           type="button"
-          disabled
-          title="Undo arrives with write mode — every change will be one click reversible."
-          className="rounded-md px-2 py-1 text-xs text-muted-foreground/60 cursor-not-allowed"
+          onClick={() => navigate('/history')}
+          title="Undo the last change — every write is journal-backed and reversible."
+          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           Undo
         </button>
@@ -127,8 +129,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                 }`}
               >
                 <span>{item.label}</span>
-                {item.deferred === true && (
-                  <span className="text-[10px] uppercase tracking-wide opacity-50">soon</span>
+                {(item.route === '/edit' || item.route === '/batch') && (
+                  <span className="text-[10px] uppercase tracking-wide opacity-50">
+                    {item.route === '/edit' ? 'sel' : 'many'}
+                  </span>
                 )}
               </button>
             );

@@ -210,6 +210,38 @@ export function FileGrid({ onOpenDetail }: { onOpenDetail: (path: string) => voi
         >
           {allFilteredSelected ? 'Clear selection' : 'Select all shown'}
         </Button>
+
+        {/* Write-surface actions (leaf 1.1.5): they always route through the
+            Save Review gate, and unlock is only needed at execute time. */}
+        <span className="flex items-center gap-1.5 border-l border-border pl-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={selectedPaths.length === 0}
+            onClick={() => navigate('/edit')}
+            title="Change fields on the selection — diff shown before anything is written."
+          >
+            Edit selection
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={filtered.length === 0}
+            onClick={() => navigate('/batch')}
+            title="Apply one set of edits to the selection or the filtered folder."
+          >
+            Batch apply
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={filtered.length === 0}
+            onClick={() => navigate('/scrub')}
+            title="Detect and remove AI-generation metadata — read-only until the typed phrase."
+          >
+            AI scrub
+          </Button>
+        </span>
       </div>
 
       {/* Virtualized grid */}

@@ -11,6 +11,7 @@ import { downloadBinary } from '../api/client';
 import { formatDateTime, basename } from '../lib/format';
 import { coordinatesForCopy, formatGpsLine, osmLink, toDms } from '../lib/gps';
 import { copyText } from '../lib/clipboard';
+import { navigate } from '../lib/router';
 
 type Depth = Exclude<MetadataDepth, never>;
 type ExtractState = { tag: string; busy: boolean; done: boolean; error: string | null };
@@ -231,8 +232,8 @@ export function DetailViewer({ filePath, onClose }: { filePath: string; onClose:
 
             {/* Reserved write-side actions — honest placeholders, not dead buttons */}
             <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-              “Validate this file”, “Diff against _original”, and “Remove GPS” arrive with write
-              mode. Nothing here changes the file today.
+              “Validate this file” and “Diff against _original” arrive in a later leaf. Editing and
+              the GPS strip live in the Edit panel; “Remove GPS” there is the same action.
             </div>
           </div>
         )}
@@ -301,6 +302,7 @@ function EmbeddedPreview({ filePath }: { filePath: string }) {
 function SimpleView({ payload }: { payload: MetadataPayload }) {
   const s = payload.simple;
   const [showRawDate, setShowRawDate] = useState(false);
+  const aiFlag = useUiStore((state) => state.badges[payload.filePath]?.aiGenerated ?? null);
   return (
     <div className="space-y-4">
       <section className="rounded-lg border border-border px-3 py-3">
@@ -363,13 +365,27 @@ function SimpleView({ payload }: { payload: MetadataPayload }) {
 
       {s.gps !== undefined && <GpsCard gps={s.gps} />}
 
-      {/* AI-generation placeholder (gate G2): the render hook exists now. */}
-      <section className="rounded-lg border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
-        <div className="mb-0.5 font-medium text-foreground">AI-generation info</div>
-        Detection of AI-tool metadata (Stable Diffusion, ComfyUI, NovelAI, C2PA…) arrives with the
-        write pipeline. No signals are claimed today — when detection lands, findings and a
-        scrubbing action will appear right here.
-      </section>
+      {/* AI-generation section: honest tri-state from the scrub detector. */}
+      {aiFlag === true ? (
+        <section className="rounded-lg border border-warning/50 bg-warning/10 px-3 py-2.5 text-xs">
+          <div className="mb-0.5 font-medium text-warning">AI-generation signals detected</div>
+          This file carries generation metadata from an AI tool (Stable Diffusion, ComfyUI,
+          NovelAI, C2PA family). Open the AI scrub to see exactly what was found — the detection
+          pass is read-only.
+          <div className="mt-1.5">
+            <Button size="sm" variant="outline" onClick={() => navigate('/scrub')}>
+              Open AI scrub
+            </Button>
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-lg border border-dashed border-border px-3 py-2.5 text-xs text-muted-foreground">
+          <div className="mb-0.5 font-medium text-foreground">AI-generation info</div>
+          {aiFlag === false
+            ? 'The AI scrub scanned this file and found no AI-generation metadata.'
+            : 'No AI scan has seen this file yet. The read-only detection pass in the AI scrub (left rail) lights this section up when it finds generation metadata.'}
+        </section>
+      )}
     </div>
   );
 }

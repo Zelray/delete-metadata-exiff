@@ -11,12 +11,27 @@ import type {
   ApiError,
   FolderScanRequest,
   FolderScanResult,
-  HealthInfo,
   MetadataDepth,
   MetadataPayload,
   SseEvent,
   ThumbnailInfo,
 } from '@metadesk/shared';
+import type {
+  HealthWithWrite,
+  RecoveryFixAction,
+  RecoveryFixResult,
+  RecoveryScanReport,
+  ScrubExecuteResponse,
+  ScrubPreviewResponse,
+  SessionModeResult,
+  ExecuteStreamFrame,
+  TagEdit,
+  UndoPreviewResponse,
+  UndoResultResponse,
+  WriteExecuteResponse,
+  WriteHistoryResponse,
+  WritePreviewResponse,
+} from '../write/types';
 
 /** Bootstrap injected by the server (prod) or the dev handshake plugin. */
 export interface Bootstrap {
@@ -59,24 +74,25 @@ export class TransportError extends Error {
   }
 }
 
-type CommandPreviewSink = (argv: string[], context: string) => void;
+type CommandPreviewSink = (argv: string[], context: string, readOnly: boolean) => void;
 
 /**
  * Reads often include a `commandPreview` (BUILD-NOTES: read endpoints include
  * it where it aids trust). The client forwards any it sees to the persistent
  * Command Preview drawer via this sink, so the trust-and-teaching habit is
  * built by every read operation without each view having to remember.
+ * Write-surface endpoints pass `readOnly = false` so the drawer labels them.
  */
 let commandPreviewSink: CommandPreviewSink | null = null;
 export function setCommandPreviewSink(sink: CommandPreviewSink | null): void {
   commandPreviewSink = sink;
 }
 
-function capturePreview(data: unknown, context: string): void {
+function capturePreview(data: unknown, context: string, readOnly = true): void {
   if (commandPreviewSink === null || data === null || typeof data !== 'object') return;
   const preview = (data as Record<string, unknown>)['commandPreview'];
   if (Array.isArray(preview) && preview.length > 0 && preview.every((t) => typeof t === 'string')) {
-    commandPreviewSink(preview as string[], context);
+    commandPreviewSink(preview as string[], context, readOnly);
   }
 }
 
@@ -117,12 +133,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // --- Read endpoints -------------------------------------------------------
 
-export function getHealth(): Promise<HealthInfo> {
-  return request<HealthInfo>('/api/health');
+/**
+ * /api/health is token-EXEMPT and, since wave 3, carries the additive
+ * `writeUnlocked` + `mode` fields alongside the frozen HealthInfo shape.
+ */
+export function getHealth(): Promise<HealthWithWrite> {
+  return request<HealthWithWrite>('/api/health');
 }
 
 export function scanFolder(req: FolderScanRequest): Promise<FolderScanResult> {
-  return request<FolderScanResult>('/api/folder/scan', {
+  return request<FolderScanResult>('/api/files/scan', {
     method: 'POST',
     body: JSON.stringify(req),
   }).then((result) => {
@@ -141,7 +161,7 @@ export function getMetadata(filePath: string, depth: MetadataDepth): Promise<Met
 
 export function getThumbnail(filePath: string): Promise<ThumbnailInfo> {
   const params = new URLSearchParams({ path: filePath });
-  return request<ThumbnailInfo>(`/api/file/thumbnail?${params.toString()}`);
+  return request<ThumbnailInfo>(`/api/thumbnail?${params.toString()}`);
 }
 
 /**
@@ -193,6 +213,228 @@ export async function downloadBinary(filePath: string, tag: string): Promise<voi
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
+}
+
+// --- Write surfaces (leaf 1.1.4 server; consumed here) ----------------------
+
+/**
+ * POST /api/session/unlock — deliberate, session-scoped. The server's global
+ * default is read-only; every write still requires a preview, runs in backup
+ * mode, and is journalled (the response note says so verbatim).
+ */
+export function unlockSession(): Promise<SessionModeResult> {
+  return request<SessionModeResult>('/api/session/unlock', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }).then((result) => {
+    capturePreview(result, 'session unlock', false);
+    return result;
+  });
+}
+
+/** POST /api/session/lock — back to the read-only default. Always safe. */
+export function lockSession(): Promise<SessionModeResult> {
+  return request<SessionModeResult>('/api/session/lock', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * POST /api/write/preview — the mandatory, read-only diff (scratch-copy
+ * simulation). Execute accepts only a previewId this produced, once.
+ */
+export function previewWrite(
+  files: string[],
+  edits: TagEdit[],
+  timezone?: string,
+): Promise<WritePreviewResponse> {
+  return request<WritePreviewResponse>('/api/write/preview', {
+    method: 'POST',
+    body: JSON.stringify({ files, edits, ...(timezone !== undefined && timezone !== '' ? { timezone } : {}) }),
+  }).then((result) => {
+    capturePreview(result, `write preview · ${files.length} file(s)`, false);
+    return result;
+  });
+}
+
+export interface ExecuteWriteOptions {
+  /** Stream SSE-framed chunk progress on the response itself. */
+  stream?: boolean;
+  onFrame?: (frame: ExecuteStreamFrame) => void;
+}
+
+/**
+ * POST /api/write/execute — runs a live preview exactly once. With
+ * {stream:true} the server streams progress frames on this response:
+ * `write-progress` chunks (intent/write/verify phases), then one
+ * `batch-complete` carrying the BatchOutcome — or a single `write-error`,
+ * which becomes a MetaApiError-shaped failure here.
+ */
+export async function executeWrite(
+  previewId: string,
+  options: ExecuteWriteOptions = {},
+): Promise<WriteExecuteResponse> {
+  if (options.stream !== true) {
+    const result = await request<WriteExecuteResponse>('/api/write/execute', {
+      method: 'POST',
+      body: JSON.stringify({ previewId }),
+    });
+    capturePreview(result, 'write execute', false);
+    return result;
+  }
+
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const token = readBootstrap().token;
+  if (token !== '') headers['X-MetaDesk-Token'] = token;
+
+  let response: Response;
+  try {
+    response = await fetch('/api/write/execute', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ previewId, stream: true }),
+    });
+  } catch (cause) {
+    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let envelope: ApiError | undefined;
+    try {
+      envelope = text === '' ? undefined : (JSON.parse(text) as ApiError);
+    } catch {
+      envelope = undefined;
+    }
+    if (envelope !== undefined && typeof envelope === 'object' && 'code' in envelope && 'message' in envelope) {
+      throw new MetaApiError(response.status, envelope);
+    }
+    throw new TransportError(response.status, `The write failed (HTTP ${response.status}).`);
+  }
+  if (response.body === null) {
+    throw new TransportError(response.status, 'The server closed the progress stream early.');
+  }
+
+  // exiftool emits CRLF (BUILD-NOTES fact 2); the frame parser is CRLF-safe.
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  // Held in a box because the assignment happens inside the frame handler.
+  const result: { complete: WriteExecuteResponse | null } = { complete: null };
+
+  const handleFrame = (frame: Record<string, unknown>): void => {
+    const type = frame['type'];
+    if (typeof type !== 'string') return;
+    options.onFrame?.(frame as unknown as ExecuteStreamFrame);
+    if (type === 'batch-complete') {
+      const outcome = frame['outcome'];
+      if (outcome !== undefined && outcome !== null && typeof outcome === 'object') {
+        result.complete = {
+          outcome: outcome as WriteExecuteResponse['outcome'],
+          commandPreview: Array.isArray(frame['commandPreview'])
+            ? (frame['commandPreview'] as string[])
+            : [],
+          consistencyNotes: [],
+        };
+        capturePreview(result.complete, 'write execute', false);
+      }
+    } else if (type === 'write-error') {
+      const code = typeof frame['code'] === 'string' ? frame['code'] : 'internal_error';
+      const message =
+        typeof frame['message'] === 'string'
+          ? frame['message']
+          : 'The write failed before any per-file result was produced.';
+      throw new MetaApiError(500, { code: code as ApiError['code'], message });
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const rawFrame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf('\n\n');
+      const parsed = parseSseFrame(rawFrame);
+      if (parsed !== null) handleFrame(parsed);
+    }
+  }
+
+  if (result.complete === null) {
+    throw new TransportError(
+      response.status,
+      'The write stream ended without a completion report. Check History for what actually happened.',
+    );
+  }
+  return result.complete;
+}
+
+/** POST /api/write/undo step 1 (no confirm): the reverse-write diff. */
+export function previewUndo(batchId: string): Promise<UndoPreviewResponse> {
+  return request<UndoPreviewResponse>('/api/write/undo', {
+    method: 'POST',
+    body: JSON.stringify({ batchId }),
+  }).then((result) => {
+    capturePreview(result, `undo preview ${batchId}`, false);
+    return result;
+  });
+}
+
+/** POST /api/write/undo step 2 ({confirm:true}): run the reverse write. */
+export function confirmUndo(batchId: string): Promise<UndoResultResponse> {
+  return request<UndoResultResponse>('/api/write/undo', {
+    method: 'POST',
+    body: JSON.stringify({ batchId, confirm: true }),
+  }).then((result) => {
+    capturePreview(result, `undo ${batchId}`, false);
+    return result;
+  });
+}
+
+/** GET /api/write/history — journal batches with freshly verified backups. */
+export function getWriteHistory(limit = 20): Promise<WriteHistoryResponse> {
+  return request<WriteHistoryResponse>(`/api/write/history?limit=${limit}`);
+}
+
+/** POST /api/scrub/preview — read-only AI-metadata detection (cap 1000). */
+export function scrubPreview(files: string[], includeFullValues = false): Promise<ScrubPreviewResponse> {
+  return request<ScrubPreviewResponse>('/api/scrub/preview', {
+    method: 'POST',
+    body: JSON.stringify({ files, includeFullValues }),
+  }).then((result) => {
+    capturePreview(result, `AI metadata scan · ${files.length} file(s)`, true);
+    return result;
+  });
+}
+
+/** POST /api/scrub/execute — the gated destructive wipe (phrase required). */
+export function scrubExecute(files: string[], confirm: string): Promise<ScrubExecuteResponse> {
+  return request<ScrubExecuteResponse>('/api/scrub/execute', {
+    method: 'POST',
+    body: JSON.stringify({ files, confirm }),
+  }).then((result) => {
+    capturePreview(result, 'AI metadata scrub', false);
+    return result;
+  });
+}
+
+/** GET /api/recovery/scan — read-only; safe at startup. */
+export function recoveryScan(folders: string[] = []): Promise<RecoveryScanReport> {
+  const query = folders.length > 0 ? `?folders=${encodeURIComponent(folders.join('|'))}` : '';
+  return request<RecoveryScanReport>(`/api/recovery/scan${query}`).then((result) => {
+    capturePreview(result, 'recovery scan', true);
+    return result;
+  });
+}
+
+/** POST /api/recovery/fix — mutates disk; runs only with confirm:true. */
+export function recoveryFix(action: RecoveryFixAction): Promise<RecoveryFixResult> {
+  return request<RecoveryFixResult>('/api/recovery/fix', {
+    method: 'POST',
+    body: JSON.stringify(action),
+  });
 }
 
 // --- SSE ------------------------------------------------------------------

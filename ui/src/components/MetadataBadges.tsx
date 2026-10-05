@@ -43,9 +43,8 @@ export function EditedBadge({ count }: { count: number }) {
 }
 
 /**
- * AI-generation badge placeholder. Renders only when a detector has flagged
- * the file (`aiGenerated === true`); detection lands in a later leaf, so the
- * badge slot is present but silent today — honest, never speculative.
+ * AI-generation badge. Lights up when the scrub wizard's detector has flagged
+ * the file (`aiGenerated === true` — set by /api/scrub/preview results).
  */
 export function AiBadge() {
   return (
@@ -53,7 +52,7 @@ export function AiBadge() {
       <Badge tone="warning" aria-label="AI generation signals found">AI</Badge>
       <span className="tip-body">
         Generation metadata from an AI tool (Stable Diffusion, ComfyUI, NovelAI, C2PA…) was
-        detected in this file. Detection arrives with the write pipeline.
+        detected in this file. Run the AI scrub (left rail) to see exactly what was found.
       </span>
     </span>
   );
@@ -66,12 +65,12 @@ export function AiBadge() {
 export function AiBadgeLegend() {
   return (
     <span className="tip">
-      <Badge tone="neutral" className="opacity-60" aria-label="AI-generated badge coming soon">
-        AI · soon
+      <Badge tone="neutral" className="opacity-60" aria-label="AI-generated badge">
+        AI
       </Badge>
       <span className="tip-body">
-        A badge that will mark files carrying AI-generation metadata. Detection arrives with the
-        write pipeline — no files are flagged yet.
+        Marks files carrying AI-generation metadata. The badge lights up after the AI scrub's
+        read-only detection pass has seen the file.
       </span>
     </span>
   );

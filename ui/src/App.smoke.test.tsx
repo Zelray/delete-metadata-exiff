@@ -85,9 +85,12 @@ describe('App shell smoke', () => {
     expect(text).toContain('Open a folder');
     expect(text).toContain('Command preview');
     expect(text).toContain('Include subfolders');
-    // Nav stays honest: deferred tools carry their "soon" marker.
+    // Nav stays honest: every tool is live in leaf 1.1.5, so no "soon" markers
+    // remain — the write tools are real routes, not placeholders.
     expect(text).toContain('History');
-    expect(text).toContain('soon');
+    expect(text).toContain('AI scrub');
+    expect(text).toContain('Batch apply');
+    expect(text).not.toContain('soon');
     await act(async () => {
       root.unmount();
     });

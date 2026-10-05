@@ -7,9 +7,34 @@ const HELP_SECTIONS: Array<{ panel: string; lines: string[] }> = [
   {
     panel: 'App shell',
     lines: [
-      'Left rail picks the tool: Browse (folders + grid), Console (raw read commands), and the panels arriving with write mode.',
-      'The mode pill in the top bar is the safety truth: gray Read-only, amber Write unlocked.',
-      'The bottom drawer always shows the exact exiftool arguments MetaDesk is about to run.',
+      'Left rail picks the tool: Browse, Edit, Batch apply, AI scrub, Console, History, Settings.',
+      'The mode pill in the top bar is the safety truth: gray Read-only, amber Write unlocked. Unlocking is deliberate, explained in plain English, and lasts only this session.',
+      'While unlocked the whole window gets an amber border — you should never wonder whether writing is possible.',
+      'The bottom drawer always shows the exact exiftool arguments MetaDesk is about to run, read or write.',
+    ],
+  },
+  {
+    panel: 'What a diff preview is',
+    lines: [
+      'Before ANY write, MetaDesk copies each file to a scratch folder, applies the edit there, and compares. What you see in the Save Review modal is exactly what will happen — no guessing.',
+      'The modal shows old → new for every tag on every file, plus the literal exiftool command. If nothing would change, files are listed as "no change needed" instead of being counted as success.',
+      'Red "blockers" (locked folder, no disk space) disable the write button until fixed.',
+    ],
+  },
+  {
+    panel: 'What a backup is',
+    lines: [
+      'Every write runs in backup mode: before a file changes, its current version is saved as filename_original — a first-generation snapshot, kept by default.',
+      'MetaDesk records the backup\'s size and fingerprint (hash) in its journal, and verifies the backup matches before a file is allowed to be called "updated".',
+      'If the backup cannot be verified, the file is reported as failed — honestly, even though the bytes were written.',
+    ],
+  },
+  {
+    panel: 'What undo does',
+    lines: [
+      'Undo reverses a change from the journal\'s before-values: the old text goes back, tags that were added are removed. It is a normal write, so it previews first and keeps a fresh backup.',
+      'History shows every batch with a backup "verified" chip. "Restore last batch" is one click; undoing the same batch twice is refused (it would re-apply the change).',
+      'The nuclear option — "Restore _original files" — reverts EVERYTHING since first contact, not just the last batch. It is labeled and confirmed twice for that reason.',
     ],
   },
   {
@@ -23,7 +48,39 @@ const HELP_SECTIONS: Array<{ panel: string; lines: string[] }> = [
     panel: 'File grid',
     lines: [
       'Click a card to inspect it; Ctrl-click adds to the selection; Shift-click selects the range.',
-      'Badges: GPS = has location, © = has copyright, AI = generation metadata (arriving).',
+      'Badges: GPS = has location, © = has copyright, AI = generation metadata (lit by the AI scrub\'s scan).',
+      'Toolbar buttons open the write tools for the selection: Edit, Batch apply, AI scrub.',
+    ],
+  },
+  {
+    panel: 'Edit panel',
+    lines: [
+      'An empty box means leave unchanged — nothing is written for fields you leave empty.',
+      'Clearing a field is a separate red "Delete…" action with its own confirmation; it never happens by emptying a box.',
+      'The GPS strip at the bottom is destructive: it lists every GPS tag per file, exports the coordinates to a sidecar first, and needs a typed phrase.',
+    ],
+  },
+  {
+    panel: 'Batch apply',
+    lines: [
+      'Scope is the selection or all filtered files; the "only files with GPS" / "missing Copyright" filters read the folder scan\'s badges.',
+      'The date shift moves Date Taken, CreateDate, and ModifyDate together and previews old → new per file.',
+      'Big batches run chunk by chunk with live progress; a failed file never stops the others.',
+    ],
+  },
+  {
+    panel: 'AI scrub',
+    lines: [
+      'Step 1 scans (read-only) for Stable Diffusion, ComfyUI, NovelAI, and C2PA metadata — and lights the AI badges in the grid.',
+      'Step 2 shows what will be removed AND what cannot be removed (ComfyUI prompt/workflow chunks, C2PA, data hidden in pixels) — those are flagged honestly, never silently skipped.',
+      'Step 3 needs the typed phrase REMOVE AI METADATA; the full original values are exported before anything is deleted.',
+    ],
+  },
+  {
+    panel: 'Results',
+    lines: [
+      'Three counts, always: Updated / Unchanged (nothing happened — never dressed up as success) / Needs attention.',
+      'Failures come with a plain-English explanation and a suggested fix; Retry re-previews only the failed files.',
     ],
   },
   {
@@ -87,7 +144,8 @@ export function HelpOverlay() {
           ))}
         </div>
         <p className="mt-5 text-xs text-muted-foreground">
-          Nothing in MetaDesk changes a file without showing you the exact command first.
+          Nothing in MetaDesk changes a file without showing you the exact change first, keeping a
+          verified backup, and leaving a way back.
         </p>
       </div>
     </div>

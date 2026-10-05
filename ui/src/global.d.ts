@@ -14,3 +14,9 @@ declare global {
     };
   }
 }
+
+/** Vite's `?raw` import (used by tests to assert on module source text). */
+declare module '*?raw' {
+  const source: string;
+  export default source;
+}

@@ -5,10 +5,19 @@ import { useEffect, useState } from 'react';
  * no nested routing needs, so a ~40-line router keeps the approved-deps list
  * honest (BUILD-NOTES: TanStack Query + zustand, nothing heavyweight).
  *
- * Routes reserved for later leaves stay real routes — the panels are honest
- * stubs saying the feature arrives with write mode.
+ * Every route is a real panel in leaf 1.1.5 (read + write surfaces).
  */
-export const ROUTES = ['/', '/browse', '/console', '/edit', '/batch', '/history', '/settings'] as const;
+export const ROUTES = [
+  '/',
+  '/browse',
+  '/console',
+  '/edit',
+  '/batch',
+  '/results',
+  '/history',
+  '/settings',
+  '/scrub',
+] as const;
 
 export type Route = (typeof ROUTES)[number];
 

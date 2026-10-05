@@ -51,10 +51,19 @@ export function SseBridge() {
             queryClient.setQueryData(queryKeys.thumbnail(event.filePath), info);
             break;
           }
-          default:
+          default: {
+            // Additive event (BUILD-NOTES: clients ignore unknown types):
+            // `mode-changed` fires when any client unlocks/locks writing; the
+            // mode pill follows the server's word immediately.
+            const additive = event as unknown as { type: string; writeUnlocked?: unknown };
+            if (additive.type === 'mode-changed' && typeof additive.writeUnlocked === 'boolean') {
+              useUiStore.getState().setWriteUnlocked(additive.writeUnlocked);
+              void queryClient.invalidateQueries({ queryKey: queryKeys.health });
+            }
             // metadata-ready / write-progress / batch-complete arrive with the
             // write leaves; unknown events are ignored, never fatal.
             break;
+          }
         }
       }, onDisconnected);
     };

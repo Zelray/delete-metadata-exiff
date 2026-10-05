@@ -3,27 +3,31 @@ import { AppShell } from './shell/AppShell';
 import { Home } from './views/Home';
 import { Browse } from './views/Browse';
 import { ConsoleView } from './views/ConsoleView';
-import { EditStub, BatchStub, HistoryStub, SettingsStub } from './views/WriteStubs';
+import { EditPanel } from './views/EditPanel';
+import { BatchPanel } from './views/BatchPanel';
+import { ResultsReport } from './views/ResultsReport';
+import { HistoryView } from './views/HistoryView';
+import { ScrubWizard } from './views/ScrubWizard';
+import { SettingsView } from './views/SettingsView';
 import { useRoute } from './lib/router';
 import { setCommandPreviewSink } from './api/client';
 import { useUiStore } from './state/store';
 
 /**
- * Route table. Read surfaces are live; the write-side routes exist and say
- * honestly that they arrive with write mode (nav never lies).
- *
- * NOTE FOR LEAF 1.1.5 (write surfaces): App.tsx ownership transfers here with
- * the wave-4 handoff (PLAN.md dispatch table). The Edit/Batch/Save Review
- * views replace the stubs below; keep the three-zone shell.
+ * Route table (leaf 1.1.5): every route is a real panel. The read shell keeps
+ * its three-zone layout; the write surfaces — Edit, Batch, Results, History,
+ * the AI-scrub wizard, and Settings — all route their writes through the same
+ * mandatory Save Review gate. WriteStubs is gone; nothing here pretends.
  */
 export default function App() {
   const route = useRoute();
 
   // Any API response carrying `commandPreview` feeds the persistent drawer —
   // the trust-and-teaching surface — without each view having to remember.
+  // The client labels write commands so the drawer never calls one "read only".
   useEffect(() => {
-    setCommandPreviewSink((argv, label) => {
-      useUiStore.getState().setNextCommand(argv, label, true);
+    setCommandPreviewSink((argv, label, readOnly) => {
+      useUiStore.getState().setNextCommand(argv, label, readOnly);
     });
     return () => setCommandPreviewSink(null);
   }, []);
@@ -33,10 +37,12 @@ export default function App() {
       {route === '/' && <Home />}
       {route === '/browse' && <Browse />}
       {route === '/console' && <ConsoleView />}
-      {route === '/edit' && <EditStub />}
-      {route === '/batch' && <BatchStub />}
-      {route === '/history' && <HistoryStub />}
-      {route === '/settings' && <SettingsStub />}
+      {route === '/edit' && <EditPanel />}
+      {route === '/batch' && <BatchPanel />}
+      {route === '/results' && <ResultsReport />}
+      {route === '/history' && <HistoryView />}
+      {route === '/settings' && <SettingsView />}
+      {route === '/scrub' && <ScrubWizard />}
     </AppShell>
   );
 }

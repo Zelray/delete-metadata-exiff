@@ -7,15 +7,34 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { FolderScanRequest, FolderScanResult } from '@metadesk/shared';
+import type { BatchOutcome, TagEdit } from '../write/types';
+
+/** The most recent executed write — the Results Report's subject (/results). */
+export interface LastWrite {
+  label: string;
+  /** The edits that ran (retry re-previews ONLY failed files with these). */
+  edits: TagEdit[];
+  timezone?: string;
+  outcome: BatchOutcome;
+  commandPreview: string[];
+  consistencyNotes: string[];
+  at: string;
+  /** Present for scrub runs: the sidecar export + honest not-removed list. */
+  scrub?: {
+    exportedValuesPath: string;
+    notRemoved: Array<{ filePath: string; tag: string; reason: string }>;
+  };
+}
 
 export type ThemeChoice = 'dark' | 'light' | 'system';
 export type Density = 'comfortable' | 'compact';
 
-/** Per-file badge knowledge, learned when a file's metadata is read. */
+/** Per-file badge knowledge, learned when a file's metadata is read or the
+ * AI-scrub wizard detects findings (aiGenerated is tri-state: unknown/null). */
 export interface FileBadges {
   hasGps: boolean;
   hasCopyright: boolean;
-  /** AI-generation signals — placeholder until detection lands (leaf 1.1.4/1.1.5). */
+  /** true when the scrub detector found AI-generation signals in this file. */
   aiGenerated: boolean | null;
 }
 
@@ -31,9 +50,13 @@ export interface CommandHistoryEntry {
 
 interface UiState {
   // --- mode (safety UX) ---
-  /** Always false in this leaf: write unlock arrives with the write leaf. */
+  /** Mirror of the server's session state; health is the source of truth. */
   writeUnlocked: boolean;
   setWriteUnlocked: (unlocked: boolean) => void;
+
+  // --- last executed write (feeds /results) ---
+  lastWrite: LastWrite | null;
+  setLastWrite: (write: LastWrite) => void;
 
   // --- folder / scan context ---
   scanRequest: FolderScanRequest | null;
@@ -93,6 +116,9 @@ export const useUiStore = create<UiState>()(
     (set, get) => ({
       writeUnlocked: false,
       setWriteUnlocked: (unlocked) => set({ writeUnlocked: unlocked }),
+
+      lastWrite: null,
+      setLastWrite: (write) => set({ lastWrite: write }),
 
       scanRequest: null,
       scanResult: null,

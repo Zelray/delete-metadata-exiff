@@ -50,7 +50,7 @@ export function CommandPreviewDrawer() {
         </span>
         <span className="truncate font-mono text-xs text-muted-foreground">
           {argv.length > 0
-            ? `Next: exiftool ${argv.slice(0, 6).join(' ')}${argv.length > 6 ? ' …' : ''} (read only)`
+            ? `Next: exiftool ${argv.slice(0, 6).join(' ')}${argv.length > 6 ? ' …' : ''} (${nextCommand?.readOnly === false ? 'write command' : 'read only'})`
             : 'No command yet — open a folder or read a file to see one.'}
         </span>
       </button>
