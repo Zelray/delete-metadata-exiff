@@ -1,0 +1,10 @@
+{
+  "name": "@metadesk/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder workspace: MetaDesk browser UI (built in a later leaf).",
+  "scripts": {
+    "test": "node -e \"console.log('ui: no tests yet (placeholder workspace)')\""
+  }
+}

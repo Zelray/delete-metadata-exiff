@@ -1,0 +1,20 @@
+{
+  "name": "metadesk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MetaDesk - a local GUI for ExifTool on Windows",
+  "workspaces": [
+    "shared",
+    "server",
+    "ui",
+    "tests-e2e"
+  ],
+  "scripts": {
+    "test": "npm --workspace server test",
+    "build": "npm --workspaces --if-present run build",
+    "dev": "pwsh -NoProfile -ExecutionPolicy Bypass -File bin/metadesk-dev.ps1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
