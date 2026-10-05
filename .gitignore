@@ -1,5 +1,7 @@
 node_modules/
 dist/
-data/
+# Runtime state only (portfile, journal, caches) — keep the dir, never its contents.
+data/*
+!data/.gitkeep
 evidence/
 *.log
