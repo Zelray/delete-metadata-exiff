@@ -3,8 +3,29 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder workspace: MetaDesk browser UI (built in a later leaf).",
+  "description": "MetaDesk browser UI (React + Vite + Tailwind) — read surfaces.",
   "scripts": {
-    "test": "node -e \"console.log('ui: no tests yet (placeholder workspace)')\""
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --force",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.80.0",
+    "@tanstack/react-virtual": "^3.13.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
   }
 }

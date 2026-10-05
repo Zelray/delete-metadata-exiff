@@ -1,0 +1,146 @@
+@import 'tailwindcss';
+
+/*
+ * MetaDesk design language — calm dark-first "workbench".
+ * Cool gray-blue chrome everywhere; ONE accent; warm amber is reserved for
+ * the write-unlocked danger state so it reads from across the room.
+ * Light mode is a true peer via the same tokens; `.dark`/`.light` on <html>
+ * and a `system` follow option are handled by the theme store.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root,
+.light {
+  --background: oklch(0.975 0.004 250);
+  --foreground: oklch(0.24 0.015 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.24 0.015 255);
+  --muted: oklch(0.94 0.006 250);
+  --muted-foreground: oklch(0.5 0.02 255);
+  --border: oklch(0.9 0.008 250);
+  --input: oklch(0.92 0.008 250);
+  --ring: oklch(0.62 0.09 220);
+  --accent: oklch(0.55 0.1 225);
+  --accent-foreground: oklch(0.99 0.002 250);
+  --accent-soft: oklch(0.93 0.03 225);
+  --success: oklch(0.58 0.1 155);
+  --warning: oklch(0.72 0.14 75);
+  --warning-foreground: oklch(0.25 0.05 75);
+  --destructive: oklch(0.55 0.16 25);
+  --skeleton: oklch(0.92 0.006 250);
+}
+
+.dark {
+  --background: oklch(0.21 0.012 255);
+  --foreground: oklch(0.92 0.006 250);
+  --card: oklch(0.25 0.014 255);
+  --card-foreground: oklch(0.92 0.006 250);
+  --muted: oklch(0.29 0.014 255);
+  --muted-foreground: oklch(0.68 0.015 250);
+  --border: oklch(0.34 0.015 255);
+  --input: oklch(0.31 0.015 255);
+  --ring: oklch(0.66 0.09 220);
+  --accent: oklch(0.74 0.1 220);
+  --accent-foreground: oklch(0.2 0.03 250);
+  --accent-soft: oklch(0.32 0.04 225);
+  --success: oklch(0.72 0.12 155);
+  --warning: oklch(0.79 0.14 75);
+  --warning-foreground: oklch(0.24 0.06 75);
+  --destructive: oklch(0.68 0.16 25);
+  --skeleton: oklch(0.3 0.014 255);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-destructive: var(--destructive);
+  --color-skeleton: var(--skeleton);
+  --font-sans:
+    ui-sans-serif, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Minimal, purposeful motion only: skeleton shimmer + drawer transition. */
+@keyframes metadesk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.skeleton {
+  background: var(--skeleton);
+  animation: metadesk-pulse 1.6s ease-in-out infinite;
+}
+
+/* Plain-English tooltip for argv chips and badges (CSS-only, no dependency). */
+.tip {
+  position: relative;
+}
+.tip > .tip-body {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 20rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--card-foreground);
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  z-index: 60;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25);
+}
+.tip:hover > .tip-body,
+.tip:focus-within > .tip-body {
+  opacity: 1;
+}
+
+/* Keyboard focus: one consistent calm ring. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Scrollbars stay quiet. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
