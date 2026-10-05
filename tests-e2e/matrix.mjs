@@ -37,6 +37,16 @@
  *
  * Run: node app/tests-e2e/matrix.mjs  (builds nothing — run verify-e2e.mjs
  * all, or build app/ui first). Exits 0 only when every check passed.
+ *
+ * PACKAGED MODE (leaf 2.2.2, boot seam ONLY): `--packaged <path to an
+ * extracted MetaDesk.exe>` boots the packaged app instead of the dev
+ * launcher. Everything downstream — portfile handshake, the ten flows, the
+ * API cases, the evidence mirror — runs identically, because the packaged
+ * server speaks the same portfile contract. The stop seam follows the
+ * packaged lifecycle: the shell's close button IS the quit path (D6), so the
+ * harness posts WM_CLOSE to its own instance's window; if the app will not
+ * exit, the last resort is taskkill on the shell's own pid (/T /F) and the
+ * run FAILS — the harness never walks away from a live packaged instance.
  */
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -70,6 +80,13 @@ const OVERALL_TIMEOUT_MS = 6 * 60 * 1000;
 // seven keep their committed bytes (see shot() below).
 const RETAKE_SET = new Set(['01-home.png', '09-console.png', '10-settings.png']);
 const RESHOOT_ALL = process.argv.includes('--reshoot-all');
+/** PACKAGED MODE: boot this extracted MetaDesk.exe instead of the dev launcher. */
+const PACKAGED_FLAG = process.argv.includes('--packaged');
+const packagedExe = PACKAGED_FLAG ? process.argv[process.argv.indexOf('--packaged') + 1] : null;
+if (PACKAGED_FLAG && (typeof packagedExe !== 'string' || !existsSync(packagedExe))) {
+  process.stdout.write('e2e matrix FAILED\n\n--packaged needs the path to an extracted MetaDesk.exe\n');
+  process.exit(1);
+}
 /** The wave-6 capture date of record for the seven accepted frames. */
 const WAVE6_CAPTURE_DATE = '2026-10-05';
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -160,6 +177,8 @@ let exitCode = 0;
 let launcherChild = null;
 let scratch = '';
 let lockChild = null;
+/** The boot's own portfile, kept so the packaged stop can check the engine pid. */
+let lastPortfile = null;
 
 /** Minimal token-carrying HTTP client for the API-level cases. */
 class ApiClient {
@@ -215,10 +234,17 @@ try {
     }
   }
   if (launcherChild !== null && launcherChild.exitCode === null && launcherChild.signalCode === null) {
-    try {
-      launcherChild.kill('SIGKILL');
-    } catch {
-      /* already gone */
+    // PACKAGED MODE: a GUI exe left behind would keep its engine tree on
+    // Mike's desktop — kill OUR shell pid (/T so nothing of ours escapes).
+    // The dev path keeps its existing SIGKILL-of-the-launcher cleanup.
+    if (packagedExe) {
+      await hardKillTree(launcherChild.pid).catch(() => undefined);
+    } else {
+      try {
+        launcherChild.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
     }
   }
   if (scratch !== '') await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
@@ -226,9 +252,13 @@ try {
 process.exit(exitCode);
 
 async function run() {
-  assertUiBuilt();
+  // PACKAGED MODE serves the ui/dist baked into the package; the dev-path
+  // bundle check is a dev-mode assertion.
+  if (!packagedExe) {
+    assertUiBuilt();
+  }
   const uiIndex = path.join(UI_DIST, 'index.html');
-  const uiBundleMtime = existsSync(uiIndex) ? readFileSync(uiIndex).toString().length : 0;
+  const uiBundleMtime = !packagedExe && existsSync(uiIndex) ? readFileSync(uiIndex).toString().length : 1;
   if (uiBundleMtime === 0) fail('The built UI bundle is empty');
   mkdirSync(EVIDENCE_DIR, { recursive: true });
 
@@ -249,20 +279,33 @@ async function run() {
   const sdShaBefore = sha256File(sdPng);
   step('fixtures', `${(await readdirSyncSafe(photos.dir)).length} files (hostile names + photo.jpg + ai-art.png)`);
 
-  // ---- boot the real stack through the launcher ------------------------------
+  // ---- boot the real stack: the dev launcher, or the packaged app ------------
   const cleanEnv = { ...process.env };
   for (const key of ['METADESK_DATA_DIR', 'METADESK_PORT', 'METADESK_TOKEN', 'METADESK_EXIFTOOL', 'METADESK_SSE_HEARTBEAT_MS']) {
     delete cleanEnv[key];
   }
   cleanEnv['METADESK_DATA_DIR'] = dataDir;
   const portfilePath = path.join(dataDir, 'portfile.json');
-  launcherChild = spawn(process.execPath, [LAUNCHER, '--no-browser'], {
-    cwd: APP_ROOT,
-    shell: false,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: cleanEnv,
-  });
+  if (packagedExe) {
+    // PACKAGED BOOT SEAM: the extracted package's MetaDesk.exe owns the
+    // lifecycle and speaks the same portfile contract. Its window shows on
+    // the desktop for the length of the run; that is expected.
+    launcherChild = spawn(packagedExe, [], {
+      cwd: path.dirname(packagedExe),
+      shell: false,
+      windowsHide: false, // the packaged app is a GUI; the portfile is the handshake either way
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: cleanEnv,
+    });
+  } else {
+    launcherChild = spawn(process.execPath, [LAUNCHER, '--no-browser'], {
+      cwd: APP_ROOT,
+      shell: false,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: cleanEnv,
+    });
+  }
   let launcherOutput = '';
   launcherChild.stdout.setEncoding('utf8');
   launcherChild.stderr.setEncoding('utf8');
@@ -270,9 +313,10 @@ async function run() {
   launcherChild.stderr.on('data', (c) => (launcherOutput += c));
 
   const portfile = await pollPortfile(portfilePath, 60_000);
+  lastPortfile = portfile;
   const base = `http://127.0.0.1:${portfile.port}`;
   const token = portfile.token;
-  step('boot', `${base} (server pid ${portfile.pid})`);
+  step('boot', `${base} (server pid ${portfile.pid}${packagedExe ? ', packaged MetaDesk.exe' : ', dev launcher'})`);
 
   // ---- browser: the real served bundle, 1280x800, dark -----------------------
   const browser = await chromium.launch({ headless: true });
@@ -643,7 +687,12 @@ async function run() {
 
   // ---- graceful stop through the launcher's own channel ----------------------
   await stopStack();
-  step('stop', 'launcher stdin closed; server stopped cleanly');
+  step(
+    'stop',
+    packagedExe
+      ? 'packaged app closed (WM_CLOSE); server stopped cleanly'
+      : 'launcher stdin closed; server stopped cleanly',
+  );
 }
 
 // ---- capture manifest ------------------------------------------------------------
@@ -759,6 +808,10 @@ async function pollPortfile(portfilePath, timeoutMs) {
 
 async function stopStack() {
   if (launcherChild === null) return;
+  if (packagedExe) {
+    await stopPackagedApp();
+    return;
+  }
   // The established Windows stop channel: end the launcher's stdin and the
   // whole graceful ladder runs (server stdin end -> engine shutdown).
   const exited = new Promise((resolve) => launcherChild.once('exit', resolve));
@@ -778,6 +831,94 @@ async function stopStack() {
       stdio: 'ignore',
     });
     await new Promise((resolve) => stop.once('exit', resolve));
+  }
+}
+
+/**
+ * PACKAGED stop: the shell's close button IS the quit path (D6), so the
+ * harness posts WM_CLOSE to its OWN instance's window and the shell's
+ * graceful ladder takes the engine down. The engine pid must be gone shortly
+ * after the shell exits; if anything of ours survives, the last resort is
+ * taskkill on the shell's own pid (/T /F) and the run FAILS — never a silent
+ * walk-away from a live packaged instance.
+ */
+async function stopPackagedApp() {
+  const enginePid = lastPortfile !== null && Number.isInteger(lastPortfile.pid) ? lastPortfile.pid : null;
+  const closed = await closeMainWindow(launcherChild.pid);
+  const exited = new Promise((resolve) => launcherChild.once('exit', resolve));
+  const timeout = new Promise((resolve) => setTimeout(resolve, 45_000));
+  await Promise.race([exited, timeout]);
+  if (launcherChild.exitCode === null) {
+    await hardKillTree(launcherChild.pid);
+    fail(
+      `The packaged MetaDesk.exe did not exit within 45 s of WM_CLOSE${
+        closed ? '' : ' (no window was found to close)'
+      }; its tree was hard-killed`,
+    );
+  }
+  const settleUntil = Date.now() + 10_000;
+  while (enginePid !== null && pidAlive(enginePid) && Date.now() < settleUntil) {
+    await sleep(250);
+  }
+  if (enginePid !== null && pidAlive(enginePid)) {
+    await hardKillTree(launcherChild.pid);
+    fail(`The packaged app's engine (pid ${enginePid}) survived the window close; its tree was hard-killed`);
+  }
+}
+
+/** PostMessage(hwnd, WM_CLOSE) to one pid's main window (argv-array pwsh). */
+async function closeMainWindow(pid) {
+  const script = `
+    Add-Type -Namespace MetaDeskMatrix -Name Native -MemberDefinition '
+      [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    '
+    $window = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue |
+      Where-Object { $_.MainWindowHandle -ne 0 } |
+      Select-Object -First 1
+    if ($null -eq $window) { Write-Output 'NOWINDOW' }
+    else {
+      [MetaDeskMatrix.Native]::PostMessage($window.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+      Write-Output ('CLOSED ' + $window.Id)
+    }
+  `;
+  const out = await runPowerShell(script);
+  return out.includes('CLOSED');
+}
+
+/** argv-array pwsh, no shell string (house rule). */
+function runPowerShell(script) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('pwsh', ['-NoProfile', '-NonInteractive', '-NoLogo', '-Command', script], {
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (c) => (out += c));
+    child.on('error', reject);
+    child.on('exit', (code) => resolve(code === 0 ? out : ''));
+  });
+}
+
+/** taskkill /T /F on ONE pid (never /IM — never sweep someone else's process). */
+function hardKillTree(pid) {
+  return new Promise((resolve) => {
+    const kill = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    kill.on('error', () => resolve());
+    kill.on('exit', () => resolve());
+  });
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error !== null && typeof error === 'object' && error.code === 'EPERM';
   }
 }
 

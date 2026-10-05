@@ -35,6 +35,14 @@
  *             screenshots) + the same evidence-snapshot check, and prints the
  *             overall marker.
  *
+ *   all --packaged   (leaf 2.2.2) the same suite, but the Playwright matrix
+ *             boots the EXTRACTED PACKAGE's MetaDesk.exe (from
+ *             app/dist-desktop/metadesk-*-portable-win-x64.zip, extracted to
+ *             a temp dir) with a temp data dir instead of the dev launcher —
+ *             boot seam only; the flows, assertions and evidence handling are
+ *             byte-for-byte the same run. `--packaged` is only valid with
+ *             "all" and must come after the subcommand.
+ *
  * Success markers, printed EXACTLY as the FIRST line of stdout:
  *
  *   e2e roundtrip verification passed
@@ -76,7 +84,17 @@ if (!SUBCOMMANDS.has(requested)) {
   process.exit(1);
 }
 
-const watchdogDelay = requested === 'all' ? 10 * 60 * 1000 : 6 * 60 * 1000;
+/** leaf 2.2.2: `--packaged` after the subcommand runs the matrix on the package. */
+const PACKAGED_FLAG = process.argv.slice(3).includes('--packaged');
+const unknownArgs = process.argv.slice(3).filter((arg) => arg !== '--packaged');
+if (unknownArgs.length > 0 || (PACKAGED_FLAG && requested !== 'all')) {
+  process.stdout.write(
+    'e2e verification FAILED\n\nusage: node app/scripts/verify-e2e.mjs <unit|roundtrip|scrub|gps|evidence|all> [--packaged]  (--packaged is only valid with "all")\n',
+  );
+  process.exit(1);
+}
+
+const watchdogDelay = (requested === 'all' ? (PACKAGED_FLAG ? 12 : 10) : 6) * 60 * 1000;
 const watchdog = setTimeout(() => {
   process.stdout.write(`e2e verification FAILED\n\noverall watchdog fired (${watchdogDelay / 60000} min)\n`);
   process.exit(1);
@@ -837,14 +855,72 @@ async function runMatrix() {
   }
   // The matrix prints its own progress; its marker line must say "passed".
   const result = await runChild(process.execPath, [matrixEntry], TESTS_E2E_DIR, 'playwright matrix', { forwardStderr: true });
-  if (!/^e2e matrix passed$/m.test(result)) {
-    fail('The Playwright matrix did not report "e2e matrix passed"');
+  assertMatrixPassed(result, 'playwright matrix');
+}
+
+/**
+ * PACKAGED MODE (leaf 2.2.2): extract the portable zip to a temp dir and hand
+ * the matrix the extracted MetaDesk.exe — the boot seam is the only
+ * difference, so the identical flows + assertions run against the identical
+ * packaged server + packaged UI bundle.
+ */
+async function runMatrixPackaged() {
+  const matrixEntry = path.join(TESTS_E2E_DIR, 'matrix.mjs');
+  if (!existsSync(matrixEntry)) fail(`The Playwright matrix is missing: ${matrixEntry}`);
+  if (!existsSync(path.join(APP_ROOT, 'node_modules', 'playwright', 'package.json')) &&
+      !existsSync(path.join(TESTS_E2E_DIR, 'node_modules', 'playwright', 'package.json'))) {
+    fail('playwright is not installed — run: npm install -D playwright -w @metadesk/tests-e2e && npx playwright install chromium');
+  }
+  const zipPath = findPortableZip();
+  const extractDir = await newScratch('packaged');
+  await runChild(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-NoLogo',
+      '-Command',
+      `Expand-Archive -LiteralPath '${pwsq(zipPath)}' -DestinationPath '${pwsq(extractDir)}' -Force; Write-Output EXTRACT-OK`,
+    ],
+    APP_ROOT,
+    'package extraction',
+  );
+  const exePath = path.join(extractDir, 'MetaDesk', 'MetaDesk.exe');
+  if (!existsSync(exePath)) fail(`The extracted package has no MetaDesk.exe at ${exePath}`);
+  const result = await runChild(
+    process.execPath,
+    [matrixEntry, '--packaged', exePath],
+    TESTS_E2E_DIR,
+    'playwright matrix (packaged)',
+    { forwardStderr: true },
+  );
+  assertMatrixPassed(result, 'playwright matrix (packaged)');
+}
+
+function assertMatrixPassed(matrixOutput, label) {
+  if (!/^e2e matrix passed$/m.test(matrixOutput)) {
+    fail(`The ${label} did not report "e2e matrix passed"`);
   }
   // The matrix may pass while honestly reporting pre-existing product defects
   // it must not fix (outside this leaf's OWNS) — re-state them loudly.
-  for (const line of result.split(/\r?\n/)) {
+  for (const line of matrixOutput.split(/\r?\n/)) {
     if (line.includes('KNOWN BUG')) process.stderr.write(`  !  ${line.trim()}\n`);
   }
+}
+
+/** The one portable zip build-portable.mjs emits (exactly one may exist). */
+function findPortableZip() {
+  const distDir = path.join(APP_ROOT, 'dist-desktop');
+  if (!existsSync(distDir)) fail(`No build output directory at ${distDir} — run node app/scripts/build-portable.mjs --all first`);
+  const zips = readdirSync(distDir).filter((name) => /^metadesk-\d+\.\d+\.\d+-portable-win-x64\.zip$/.test(name)).sort();
+  if (zips.length !== 1) {
+    fail(`Expected exactly one portable zip under app/dist-desktop, found: ${zips.join(', ') || '(none)'} — run node app/scripts/build-portable.mjs --all first`);
+  }
+  return path.join(distDir, zips[0]);
+}
+
+function pwsq(text) {
+  return String(text).replace(/'/g, "''");
 }
 
 function runChild(command, args, cwd, label, opts = {}) {
@@ -996,8 +1072,14 @@ try {
     await runRoundtrip();
     await runScrub();
     await runGps();
-    await buildUiBundle();
-    await runMatrix();
+    if (PACKAGED_FLAG) {
+      // PACKAGED MODE: the matrix boots the extracted package's MetaDesk.exe;
+      // the packaged UI is baked into the package, so no dev UI rebuild here.
+      await runMatrixPackaged();
+    } else {
+      await buildUiBundle();
+      await runMatrix();
+    }
     verifyEvidenceSnapshot();
     finish('all e2e verifications passed');
   }
