@@ -1,0 +1,5 @@
+# Tauri build outputs (generated) — never commit.
+/target/
+/gen/
+
+# Keep Cargo.lock: this is an application; the lockfile pins the build.

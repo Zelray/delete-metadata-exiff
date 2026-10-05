@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "metadesk",
+  "description": "Minimum IPC for the MetaDesk UI served by the bundled engine at http://127.0.0.1:<dynamic port>: the page may LISTEN for Tauri events (the drag-drop absolute-path channel, wired by leaf 2.1.2). The shell never loads a local page, so local gets nothing; no shell/opener/updater/webview-navigation permissions are granted.",
+  "windows": ["main"],
+  "webviews": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": ["core:event:default"]
+}

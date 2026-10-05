@@ -8,3 +8,13 @@ evidence/
 # exiftool runtime-generated Perl caches inside the vendored engine (never commit).
 vendor/exiftool/exiftool_files/lib/Data/
 vendor/exiftool/exiftool_files/lib/auto/Data/
+
+# --- leaf 2.1.1 (desktop wrap) — build artifacts only; the pinned layout
+# --- SOURCES (app/tauri/**, scripts/**, vendor/exiftool/**) stay tracked.
+# Downloaded portable node.exe (fetched + sha256-verified by scripts/fetch-node.mjs).
+vendor/node/
+# esbuild bundle + staged package layout (assembled by scripts/build-server-bundle.mjs).
+dist-desktop/
+# Tauri build outputs (the crate's own .gitignore also covers these).
+tauri/src-tauri/target/
+tauri/src-tauri/gen/

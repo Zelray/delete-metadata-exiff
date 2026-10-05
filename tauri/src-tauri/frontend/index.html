@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MetaDesk</title>
+  </head>
+  <body>
+    <!--
+      Placeholder only. `build.frontendDist` is required by the Tauri v2 config
+      schema, but the MetaDesk shell has no local frontend: the window is created
+      at RUNTIME and navigated to the bundled engine's URL
+      (http://127.0.0.1:<dynamic port>/, pinned decision D4). This page is never
+      loaded, and `app.security.capabilities` marks the capability `local: false`
+      so it would get no IPC even if it were.
+    -->
+    <p>MetaDesk loads its interface from its bundled engine. This placeholder is never shown.</p>
+  </body>
+</html>

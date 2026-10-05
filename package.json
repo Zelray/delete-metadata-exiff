@@ -12,9 +12,16 @@
   "scripts": {
     "test": "npm --workspace server test",
     "build": "npm --workspaces --if-present run build",
-    "dev": "pwsh -NoProfile -ExecutionPolicy Bypass -File bin/metadesk-dev.ps1"
+    "dev": "pwsh -NoProfile -ExecutionPolicy Bypass -File bin/metadesk-dev.ps1",
+    "fetch:node": "node scripts/fetch-node.mjs",
+    "build:server-bundle": "node scripts/build-server-bundle.mjs",
+    "verify:desktop": "node scripts/verify-desktop.mjs"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
+    "esbuild": "^0.28.2"
   }
 }

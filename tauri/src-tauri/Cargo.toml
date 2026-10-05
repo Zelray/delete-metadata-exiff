@@ -1,0 +1,46 @@
+[package]
+name = "metadesk-shell"
+version = "0.1.0"
+description = "MetaDesk desktop shell: owns the bundled engine's lifecycle (leaf 2.1.1)"
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+
+# The binary is named MetaDesk so `target\release\MetaDesk.exe` is the package
+# root's executable, exactly as the pinned wrapped shape expects.
+[[bin]]
+name = "MetaDesk"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Registered FIRST (pinned decision D5). No other plugins: no shell, no opener,
+# no updater, no dialog plugin (dialogs are plain Win32 MessageBoxW, see dialog.rs).
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windows-only process/job plumbing: the Job Object that kernel-guarantees the
+# engine tree dies with the shell, the image-path checks that make the launch
+# sweep safe (never kill a foreign process), and the branded error dialogs.
+# MetaDesk is Windows-only by design (no target gate, no non-Windows stubs).
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    # CreateJobObjectW's SECURITY_ATTRIBUTES parameter pulls this in.
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

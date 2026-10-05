@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MetaDesk",
+  "version": "0.1.0",
+  "identifier": "com.metadesk.app",
+  "build": {
+    "frontendDist": "./frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "capabilities": ["metadesk"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [],
+    "createUpdaterArtifacts": false,
+    "icon": ["icons/icon.ico"],
+    "resources": {
+      "../../dist-desktop/stage/package.json": "package.json",
+      "../../dist-desktop/stage/node/": "node/",
+      "../../dist-desktop/stage/server/": "server/",
+      "../../dist-desktop/stage/ui/": "ui/",
+      "../../dist-desktop/stage/vendor/": "vendor/",
+      "../../dist-desktop/stage/scripts/": "scripts/"
+    }
+  }
+}
