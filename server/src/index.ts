@@ -51,6 +51,7 @@ import { registerEventsRoute, SseHub } from './routes/events.js';
 import { registerWriteRoutes } from './routes/writes.js';
 import { registerRecoveryRoutes } from './routes/recovery.js';
 import { registerDiagnosticsRoutes } from './routes/diagnostics.js';
+import { WriteSubsystem } from './writeSubsystem.js';
 
 export interface BuildServerOptions {
   config: MetaDeskConfig;
@@ -62,6 +63,8 @@ export interface BuildServerOptions {
   engine?: ExifToolSession | null;
   /** SSE heartbeat interval in ms (tests may shorten it). Default 15000. */
   sseHeartbeatMs?: number;
+  /** Files per write execution chunk (tests may shrink it). Default 200. */
+  writeChunkSize?: number;
   /** Fastify logger. Default false. */
   logger?: boolean;
 }
@@ -72,6 +75,7 @@ export interface BuildServerResult {
   token: string;
   engine: ExifToolSession | null;
   hub: SseHub;
+  write: WriteSubsystem;
   watcher: FolderWatcher;
   metadata: MetadataService | null;
   thumbnails: ThumbnailService;
@@ -128,6 +132,16 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
   // `hello` frames carry the boot health snapshot; refresh it whenever the
   // health route is polled.
   hub.setHealth(health);
+  // The ONE write subsystem (arch-v11 leaf 1.1): write mode, the single
+  // Journal, and the pipeline/scrub/GPS-strip services. The mode-changed
+  // announce is fused into unlock()/lock(), so a mode flip can never skip
+  // its SSE frame.
+  const write = new WriteSubsystem({
+    engine,
+    dataDir: config.dataDir,
+    announce: (writeUnlocked) => hub.publishModeChanged(writeUnlocked),
+    ...(options.writeChunkSize !== undefined ? { chunkSize: options.writeChunkSize } : {}),
+  });
   const watcher = new FolderWatcher();
   const metadata = engine !== null ? new MetadataService(engine, getCatalog) : null;
   const thumbnails = new ThumbnailService(config);
@@ -190,22 +204,42 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
     }
   });
 
+  // The always-visible mode: every /api/health response gains the additive
+  // writeUnlocked/mode fields (the launcher ignores unknown fields). Moved
+  // here verbatim from the write routes; the fields come from the ONE write
+  // subsystem.
+  app.addHook('onSend', async (request, _reply, payload) => {
+    const url = request.raw.url ?? '';
+    if (!url.startsWith('/api/health') || typeof payload !== 'string') return payload;
+    try {
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      const fields = write.healthFields();
+      parsed['writeUnlocked'] = fields.writeUnlocked;
+      parsed['mode'] = fields.mode;
+      return JSON.stringify(parsed);
+    } catch {
+      return payload;
+    }
+  });
+
   registerHealthRoute(app, { getHealth, hub });
   registerConsoleRoute(app, { engine });
   registerFileRoutes(app, { engine, thumbnails, hub, watcher });
   registerMetadataRoutes(app, { metadata });
   registerThumbnailRoutes(app, { thumbnails });
   registerEventsRoute(app, hub);
-  // Safety core (leaf 1.1.4): write pipeline + recovery routes. Registered
-  // after the read routes; write routes self-gate on the session unlock
-  // state and the single-writer lock.
-  registerWriteRoutes(app, { engine, dataDir: config.dataDir, hub });
-  registerRecoveryRoutes(app, { dataDir: config.dataDir });
+  // Safety core (leaf 1.1.4): write pipeline + recovery routes over the ONE
+  // write subsystem. Registered after the read routes; write routes self-gate
+  // on the session unlock state and the single-writer lock.
+  registerWriteRoutes(app, { write });
+  registerRecoveryRoutes(app, { dataDir: config.dataDir, journal: write.journal });
   // Diagnostics support bundle (leaf 2.2.1) — rides the same request gates.
   registerDiagnosticsRoutes(app, {
     dataDir: config.dataDir,
     executablePath: config.executablePath,
     appVersion: config.serverVersion,
+    write,
+    getHealth,
   });
 
   await registerStaticUi(app, config, { token, version: config.serverVersion });
@@ -224,6 +258,7 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
     token,
     engine,
     hub,
+    write,
     watcher,
     metadata,
     thumbnails,

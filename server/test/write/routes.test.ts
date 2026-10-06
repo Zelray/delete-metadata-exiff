@@ -1,17 +1,16 @@
 /**
- * Write/recovery route surface over a fully wired app (real engine, fastify
- * inject): session unlock gate on every mutating route, preview -> execute,
- * the always-visible mode on /api/health, history Verified chips, scrub
- * routes, and recovery scan/fix.
+ * Write/recovery route surface over a fully wired server (buildServer with
+ * the real engine, fastify inject): session unlock gate on every mutating
+ * route, preview -> execute, the always-visible mode on /api/health, history
+ * Verified chips, scrub routes, and recovery scan/fix.
  */
-import Fastify, { type FastifyInstance } from 'fastify';
-import type { InjectOptions, InjectPayload } from 'light-my-request';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { registerHealthRoute } from '../../src/routes/api.js';
-import { registerWriteRoutes } from '../../src/routes/writes.js';
-import { registerRecoveryRoutes } from '../../src/routes/recovery.js';
+import type { FastifyInstance } from 'fastify';
+import type { InjectOptions, InjectPayload } from 'light-my-request';
+import { loadConfig } from '../../src/config.js';
+import { buildServer, type BuildServerResult } from '../../src/index.js';
 import {
   makePipeline,
   makeWriteFixture,
@@ -21,12 +20,13 @@ import {
   type PipelineHarness,
   type WriteFixture,
 } from './helpers.js';
-import { PNG_1X1 } from '../helpers.js';
+import { EXE_PATH, PNG_1X1 } from '../helpers.js';
 import { SCRUB_CONFIRMATION_PHRASE } from '../../src/services/scrub.js';
 import { GPS_CONFIRMATION_PHRASE } from '../../src/services/gpsStrip.js';
 
 let fixture: WriteFixture;
 let harness: PipelineHarness;
+let server: BuildServerResult;
 let app: FastifyInstance;
 
 const TOKEN = 'write-routes-test-token';
@@ -49,21 +49,26 @@ beforeAll(async () => {
   fixture = await makeWriteFixture('metadesk-write-routes-');
   harness = await makePipeline(fixture, { unlocked: false });
 
-  app = Fastify({ logger: false });
-  registerHealthRoute(app, {
-    getHealth: async () => ({
+  server = await buildServer({
+    config: {
+      ...loadConfig(),
+      dataDir: fixture.dataDir,
+      thumbsDir: path.join(fixture.dataDir, 'thumbs'),
+      portfilePath: path.join(fixture.dataDir, 'portfile.json'),
+      executablePath: EXE_PATH,
+    },
+    token: TOKEN,
+    health: {
       ok: true,
       version: '12.99',
       readOnlyFallback: false,
       executablePath: 'test',
       minimumVersion: '12.70',
-    }),
-    hub: {
-      setHealth: () => undefined,
-    } as never,
+    },
+    engine: harness.session,
+    writeChunkSize: 1,
   });
-  registerWriteRoutes(app, { engine: harness.session, dataDir: fixture.dataDir, chunkSize: 1 });
-  registerRecoveryRoutes(app, { dataDir: fixture.dataDir });
+  app = server.app;
   await app.ready();
 }, 60_000);
 

@@ -23,8 +23,9 @@
  *  - The GLOBAL DEFAULT IS READ-ONLY. Execute routes refuse until
  *    /api/session/unlock has been called for this server session, and the
  *    mode is always visible: every /api/health response carries the additive
- *    `writeUnlocked` field (added here by an onSend hook), and unlock/lock
- *    emit an additive `mode-changed` SSE event.
+ *    `writeUnlocked`/`mode` fields (stamped by the onSend hook in index.ts), and
+ *    unlock/lock emit an additive `mode-changed` SSE event (the announce the
+ *    WriteSubsystem fuses into its unlock()/lock()).
  *  - Preview is read-only (scratch-copy simulation) and is MANDATORY: execute
  *    accepts only a previewId this server produced, and only once.
  *  - Every mutating response carries `commandPreview`: the exact argv array
@@ -33,112 +34,42 @@
  *    SseBatchComplete payloads) on the execute response itself when
  *    {"stream": true} is set.
  *
- * FLAGGED TO THE ORCHESTRATOR: SseHub (routes/events.ts, leaf 1.1.2) has no
- * public publish API for additive event types, so `mode-changed` is emitted
- * through a guarded adapter over the hub's internal broadcast. The one-line
- * upstream fix is a public `publishModeChanged()`; this adapter degrades to a
- * no-op (and the mode stays visible via /api/health) if the hub changes.
+ * The mode, the ONE journal, and the pipeline/scrub/strip services are owned
+ * by the WriteSubsystem (src/writeSubsystem.ts) the composition root builds
+ * once — these routes construct no write state of their own.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { TagEdit } from '@metadesk/shared';
-import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { ArgBuildError } from '../engine/argBuilder.js';
 import { PathRejectedError } from '../services/pathGuard.js';
-import {
-  WritePipeline,
-  WritePipelineError,
-  type ExecuteOptions,
-} from '../services/writePipeline.js';
-import { ScrubService, SCRUB_CONFIRMATION_PHRASE } from '../services/scrub.js';
-import { GpsStripService, GPS_CONFIRMATION_PHRASE } from '../services/gpsStrip.js';
-import { Journal, type BatchStartRecord } from '../services/journal.js';
-import type { SseHub } from './events.js';
+import { WritePipelineError, type ExecuteOptions } from '../services/writePipeline.js';
+import { SCRUB_CONFIRMATION_PHRASE } from '../services/scrub.js';
+import { GPS_CONFIRMATION_PHRASE } from '../services/gpsStrip.js';
+import type { BatchStartRecord } from '../services/journal.js';
+import type { WriteSubsystem } from '../writeSubsystem.js';
 import { sendError } from './api.js';
 
-// ---- session write-unlock state ---------------------------------------------
-
-export type WriteMode = 'read-only' | 'write-unlocked';
-
-/** In-memory, session-scoped write unlock. The server process IS the session:
- *  a restart drops back to the read-only default by construction. */
-export class WriteSessionState {
-  private unlockedAt: string | null = null;
-
-  get writeUnlocked(): boolean {
-    return this.unlockedAt !== null;
-  }
-
-  get mode(): WriteMode {
-    return this.writeUnlocked ? 'write-unlocked' : 'read-only';
-  }
-
-  unlock(): { mode: WriteMode; writeUnlocked: true; unlockedAt: string } {
-    this.unlockedAt = new Date().toISOString();
-    return { mode: this.mode, writeUnlocked: true, unlockedAt: this.unlockedAt };
-  }
-
-  lock(): { mode: WriteMode; writeUnlocked: false } {
-    this.unlockedAt = null;
-    return { mode: this.mode, writeUnlocked: false };
-  }
-}
-
 export interface WriteRouteDeps {
-  engine: ExifToolSession | null;
-  /** Mutable app state dir (journal, scratch, write temp files). */
-  dataDir: string;
-  hub?: SseHub;
-  /** Provider used by the execute gate; defaults to the local session state. */
-  sessionState?: WriteSessionState;
-  /** Files per execution chunk (default 200; test seam for cancel drills). */
-  chunkSize?: number;
+  /** The ONE write subsystem (mode + journal + pipeline/scrub/strip). */
+  write: WriteSubsystem;
 }
 
 const MAX_SCRUB_FILES = 1000;
 const EDIT_OPS: ReadonlySet<string> = new Set(['set', 'delete', 'append', 'remove']);
 
 export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps): void {
-  const session = deps.sessionState ?? new WriteSessionState();
-  const journal = new Journal({ dataDir: deps.dataDir });
-  const pipeline =
-    deps.engine !== null
-      ? new WritePipeline({
-          engine: deps.engine,
-          dataDir: deps.dataDir,
-          journal,
-          isWriteUnlocked: () => session.writeUnlocked,
-          ...(deps.chunkSize !== undefined ? { chunkSize: deps.chunkSize } : {}),
-        })
-      : null;
-  const scrub =
-    deps.engine !== null && pipeline !== null
-      ? new ScrubService({ engine: deps.engine, pipeline, dataDir: deps.dataDir })
-      : null;
-  const gpsStrip =
-    deps.engine !== null && pipeline !== null
-      ? new GpsStripService({ engine: deps.engine, pipeline, dataDir: deps.dataDir })
-      : null;
-
-  // The always-visible mode: every /api/health response gains the additive
-  // writeUnlocked/mode fields (the launcher ignores unknown fields).
-  app.addHook('onSend', async (request, _reply, payload) => {
-    const url = request.raw.url ?? '';
-    if (!url.startsWith('/api/health') || typeof payload !== 'string') return payload;
-    try {
-      const parsed = JSON.parse(payload) as Record<string, unknown>;
-      parsed['writeUnlocked'] = session.writeUnlocked;
-      parsed['mode'] = session.mode;
-      return JSON.stringify(parsed);
-    } catch {
-      return payload;
-    }
-  });
+  const write = deps.write;
+  // Readonly views of the subsystem's state and services (null iff the
+  // engine is null; the routes gate on that exactly as before).
+  const journal = write.journal;
+  const pipeline = write.pipeline;
+  const scrub = write.scrub;
+  const gpsStrip = write.gpsStrip;
 
   // ---- session unlock / lock -------------------------------------------------
 
   app.post('/api/session/unlock', async (_request: FastifyRequest, reply: FastifyReply) => {
-    const result = session.unlock();
-    publishModeChanged(deps.hub, true);
+    const result = write.unlock();
     return reply.code(200).send({
       ...result,
       commandPreview: [],
@@ -147,8 +78,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
   });
 
   app.post('/api/session/lock', async (_request: FastifyRequest, reply: FastifyReply) => {
-    const result = session.lock();
-    publishModeChanged(deps.hub, false);
+    const result = write.lock();
     return reply.code(200).send({ ...result, commandPreview: [] });
   });
 
@@ -180,7 +110,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
             preview: strip.envelope.preview,
             commandPreview: strip.envelope.commandPreview,
             diffNotes: strip.envelope.diffNotes,
-            writeUnlocked: session.writeUnlocked,
+            writeUnlocked: write.writeUnlocked,
             destructive: {
               scope: 'gps',
               requiresTypedConfirmation: true,
@@ -209,7 +139,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           preview: envelope.preview,
           commandPreview: envelope.commandPreview,
           diffNotes: envelope.diffNotes,
-          writeUnlocked: session.writeUnlocked,
+          writeUnlocked: write.writeUnlocked,
         });
       } catch (error) {
         return writeError(reply, error);
@@ -299,7 +229,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           outcome: result.outcome,
           commandPreview: result.commandPreview,
           consistencyNotes: result.consistencyNotes,
-          writeUnlocked: session.writeUnlocked,
+          writeUnlocked: write.writeUnlocked,
         });
       } catch (error) {
         return writeError(reply, error);
@@ -344,7 +274,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       if (typeof body.batchId !== 'string' || body.batchId.length === 0) {
         return sendError(reply, 400, 'bad_request', 'The body must include {"batchId": string}.');
       }
-      if (!session.writeUnlocked) {
+      if (!write.writeUnlocked) {
         return sendError(
           reply,
           403,
@@ -409,8 +339,8 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       }
       return reply.code(200).send({
         batches,
-        writeUnlocked: session.writeUnlocked,
-        mode: session.mode,
+        writeUnlocked: write.writeUnlocked,
+        mode: write.mode,
         commandPreview: [],
       });
     },
@@ -459,7 +389,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       if (!Array.isArray(body.files) || body.files.some((f) => typeof f !== 'string')) {
         return sendError(reply, 400, 'bad_request', 'The body must be {"files": string[], "confirm": string}.');
       }
-      if (!session.writeUnlocked) {
+      if (!write.writeUnlocked) {
         return sendError(
           reply,
           403,
@@ -644,16 +574,4 @@ function mapWriteError(error: unknown): MappedError {
 function writeError(reply: FastifyReply, error: unknown): FastifyReply {
   const mapped = mapWriteError(error);
   return sendError(reply, mapped.statusCode, mapped.code as never, mapped.message);
-}
-
-/** Emit the additive `mode-changed` SSE event through the hub's broadcast. */
-function publishModeChanged(hub: SseHub | undefined, writeUnlocked: boolean): void {
-  if (hub === undefined) return;
-  const broadcaster = hub as unknown as { broadcast?: (payload: Record<string, unknown>) => void };
-  if (typeof broadcaster.broadcast !== 'function') return;
-  broadcaster.broadcast({
-    type: 'mode-changed',
-    writeUnlocked,
-    mode: writeUnlocked ? 'write-unlocked' : 'read-only',
-  });
 }

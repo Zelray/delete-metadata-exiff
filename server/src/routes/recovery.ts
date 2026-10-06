@@ -23,6 +23,8 @@ import { sendError } from './api.js';
 
 export interface RecoveryRouteDeps {
   dataDir: string;
+  /** The ONE shared journal (the same instance the write pipeline records to). */
+  journal: Journal;
 }
 
 interface FixBody {
@@ -35,7 +37,7 @@ interface FixBody {
 }
 
 export function registerRecoveryRoutes(app: FastifyInstance, deps: RecoveryRouteDeps): void {
-  const journal = new Journal({ dataDir: deps.dataDir });
+  const journal = deps.journal;
   const recovery = new RecoveryService({ dataDir: deps.dataDir, journal });
 
   app.get(

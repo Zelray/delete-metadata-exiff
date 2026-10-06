@@ -91,6 +91,15 @@ export class SseHub {
     this.broadcast({ type: 'scan-complete', ...event });
   }
 
+  /** Publish the additive `mode-changed` event (write mode unlocked/locked). */
+  publishModeChanged(writeUnlocked: boolean): void {
+    this.broadcast({
+      type: 'mode-changed',
+      writeUnlocked,
+      mode: writeUnlocked ? 'write-unlocked' : 'read-only',
+    });
+  }
+
   /** Close every connection and stop the heartbeats (server shutdown). */
   closeAll(): void {
     for (const connection of [...this.connections]) {

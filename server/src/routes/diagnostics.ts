@@ -31,8 +31,10 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { arch, release, type } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { HealthInfo } from '@metadesk/shared';
 import { APP_ROOT, readEngineVersionCache } from '../config.js';
 import { Journal } from '../services/journal.js';
+import type { WriteSubsystem } from '../writeSubsystem.js';
 import { sendError } from './api.js';
 
 export interface DiagnosticsRouteDeps {
@@ -41,6 +43,10 @@ export interface DiagnosticsRouteDeps {
   executablePath: string;
   /** App version from app/package.json (config.serverVersion). */
   appVersion: string;
+  /** The ONE write subsystem: the bundle's write mode comes from here. */
+  write: WriteSubsystem;
+  /** The same health handshake the health route answers with. */
+  getHealth: () => Promise<HealthInfo>;
 }
 
 /** Journal tail caps (leaf-2.2.1 spec: ~200 lines or ~256 KB). */
@@ -181,8 +187,7 @@ function readServerVersion(): string {
  * the line cap or the byte cap is hit, and label exactly what was kept — a
  * support helper must be able to trust that nothing was silently summarized.
  */
-async function buildJournalTail(dataDir: string, generatedAt: Date): Promise<string> {
-  const journal = new Journal({ dataDir });
+async function buildJournalTail(journal: Journal, generatedAt: Date): Promise<string> {
   const header = [
     'MetaDesk write journal — tail',
     `Generated at: ${generatedAt.toISOString()}`,
@@ -272,28 +277,26 @@ interface LiveHealth {
 }
 
 /**
- * One internal round trip to /api/health gives the bundle BOTH the live
- * `exiftool -ver` handshake result AND the session's write mode (the additive
- * fields the write routes stamp on every health reply). It rides the same
- * gates as any request and costs the single handshake a health poll costs.
- * Every field is parsed defensively: an unknown shape degrades to "unknown"
- * in the bundle, never to a wrong answer.
+ * The bundle's live health, read directly instead of scraping /api/health:
+ * `getHealth` is the same handshake the health route answers with (a live
+ * `exiftool -ver` in production; unlike the old scrape it no longer refreshes
+ * the hub's hello-frame snapshot — that side effect belonged to the poll
+ * itself, and the launcher's polls remain the refresher), and the session's
+ * write mode comes from the ONE write subsystem — the same single definition
+ * the health stamp uses. Every field is parsed defensively: an unknown shape
+ * degrades to "unknown" in the bundle, never to a wrong answer.
  */
-async function readLiveHealth(app: FastifyInstance): Promise<LiveHealth | null> {
+async function readLiveHealth(deps: DiagnosticsRouteDeps): Promise<LiveHealth | null> {
   try {
-    const address = app.server.address();
-    const port = address !== null && typeof address === 'object' ? address.port : null;
-    const host = port === null ? '127.0.0.1' : `127.0.0.1:${port}`;
-    const response = await app.inject({ url: '/api/health', headers: { host } });
-    if (response.statusCode !== 200) return null;
-    const body = response.json() as Record<string, unknown>;
+    const body = (await deps.getHealth()) as unknown as Record<string, unknown>;
+    const mode = deps.write.healthFields();
     return {
       ok: body['ok'] === true,
       version: typeof body['version'] === 'string' ? body['version'] : '',
       executablePath: typeof body['executablePath'] === 'string' ? body['executablePath'] : '',
       reason: typeof body['reason'] === 'string' ? body['reason'] : '',
-      mode: typeof body['mode'] === 'string' ? (body['mode'] as string) : null,
-      writeUnlocked: typeof body['writeUnlocked'] === 'boolean' ? body['writeUnlocked'] : null,
+      mode: mode.mode,
+      writeUnlocked: mode.writeUnlocked,
     };
   } catch {
     return null;
@@ -399,7 +402,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, deps: Diagnostic
     const filename = `metadesk-diagnostics-${bundleStamp(generatedAt)}.zip`;
 
     try {
-      const live = await readLiveHealth(app);
+      const live = await readLiveHealth(deps);
       const outPath = path.join(deps.dataDir, 'diagnostics', filename);
       const entries: ZipEntry[] = [
         { name: 'README.txt', data: Buffer.from(buildReadme(generatedAt), 'utf8'), timestamp: generatedAt },
@@ -420,7 +423,7 @@ export function registerDiagnosticsRoutes(app: FastifyInstance, deps: Diagnostic
         },
         {
           name: 'journal-tail.txt',
-          data: Buffer.from(await buildJournalTail(deps.dataDir, generatedAt), 'utf8'),
+          data: Buffer.from(await buildJournalTail(deps.write.journal, generatedAt), 'utf8'),
           timestamp: generatedAt,
         },
       ];
