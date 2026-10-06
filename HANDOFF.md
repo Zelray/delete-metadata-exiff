@@ -381,3 +381,51 @@ SseSink/attachSink registry (its never-throw send policy is a probe-confirmed
 write-after-end crash path; revisit ONLY when the write-capable console needs a second
 sink consumer), `connect()` recomposition, SseEvent-typed writer signatures, any
 SseBridge edit, closeAll ending execute streams.
+
+### 9.2 arch-v11 leaf 1.3 — destructive leaf-kit (candidate 2) (2026-10-06, committed `590a465` + docs)
+
+Implemented architecture-review candidate 2 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.3" — which supersedes the review card's
+"~60% shared skeleton" premise (three-verifier measurement: ~45 verbatim lines of 728;
+the load-bearing destructive gates were already once-written in writePipeline.ts and
+verified once at writePipeline.test.ts:339-414). The full driver is DEFERRED with a
+recorded promotion trigger (a third shape-compatible destructive-delete flow actually
+landing; geotag-from-GPX writes values and must never become a row). Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.3.md`.
+
+What changed (four files only; zero public-surface growth):
+
+- **NEW `server/src/services/destructiveFlow.ts`** (~75 lines, pure leaf-kit, no
+  orchestration, no policy, exactly two consumers): `RAW_EXTENSIONS` (the single
+  23-entry set — both in-file copies died), `readAllTierByPath` (one all-tier JSON
+  read per call, timeout `60_000 + paths.length*500`, normalizeExifPath-keyed map;
+  the per-flow 50-file batch loops stay in the callers, which is what preserves gps's
+  partial-rows-on-failure catch), and `writeDestructiveExport` (bare delegation to
+  `journal.writeScrubExport` — payload construction stayed in the services, so neither
+  sidecar's key set nor values source could change).
+- `scrub.ts` 462→448 and `gpsStrip.ts` 268→254: consume the kit; every deliberate
+  asymmetry survived line-verified against HEAD (RAW postures, phrase timing — scrub
+  fail-fasts before any read, gps has none at service level — empty-selection
+  refuse-vs-noop, choreography order, honesty-sweep sourcing, re-detect-at-wipe).
+  writePipeline, journal, routes, writeSubsystem, shared, engine, ui, package.json:
+  untouched.
+- **NEW `server/test/write/destructiveFlow.test.ts`** (211 lines): falsifiable
+  goldens — all 23 RAW extensions (with an explicit `dng` NEGATIVE guarding against
+  the read-side classification set in metadata.ts), keying/timeout/argv shape, both
+  sidecar key sets AND values sources.
+
+Gates: G1–G10 re-executed by the orchestrator under gate-check with bound evidence on
+final bytes — ALL PASS (write 108 tests · engine 243 tests · diagnostics · server
+smoke · ui-write · typecheck · e2e scrub · e2e gps · e2e roundtrip · frozen). Senior
+review (G11): PASS, zero CRITICAL/HIGH/MEDIUM; LOW-1 (gps sweep drops duplicate docs
+on normalize collisions — same file spelled two ways in one selection) ACCEPTED as
+product-unreachable (selections come from directory scans: one file, one spelling,
+one doc) and recorded; NITs dispositioned in the ledger. ZERO code changes after gate
+binding — the recorded evidence is final-bytes evidence.
+
+Flagged for the v1.1 backlog (recorded in the scope BUILD-NOTES; do not smuggle): a
+third RAW set at `services/metadata.ts:210-213` (read-side classification, adds dng —
+DNG displays as RAW but is strip-eligible; unification is a future policy decision);
+scrub.test.ts pins the phrase REFUSAL but not the before-any-read ORDERING (pair with
+the gps sweep-failure-visibility soft spot in the next write-suite touch); the dead
+`dataDir` options on both service option types (flag-only, orphan rule).

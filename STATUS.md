@@ -1,6 +1,6 @@
 # MetaDesk — STATUS (one-glance chart)
 
-Updated: 2026-10-06 (v1.0.0 released; arch-v11 leaf 1.1 committed as `97511ff`+`421219b`; leaf 1.2 SSE close fix committed as `b747379` + evidence `572b97c` + docs `cb8eb6c`). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
+Updated: 2026-10-06 (v1.0.0 released; arch-v11 leaves 1.1 `97511ff`+`421219b`, 1.2 `b747379`+`572b97c`+`cb8eb6c`, 1.3 destructive leaf-kit `590a465` + docs — all committed, all gates green). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`; **next work: candidate 3 per `..\HANDOFF-CANDIDATE3.md` (repo root)**.
 Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/metagui-phase2/BUILD-NOTES.md`.
 
 ## Patient chart
@@ -9,6 +9,7 @@ Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/meta
 |---|---|---|
 | Write subsystem composition root (arch-v11: ONE `WriteSubsystem` owns write mode + journal + pipeline/scrub/gps strip graph; routes thinned; mode-changed announce fused) | WORKING — committed `97511ff` | `.unlazy/arch-v11/gates/leaf-1.1.md` G1–G6 + senior review PASS (details `HANDOFF.md` §9) |
 | SSE single writer + graceful close (arch-v11 leaf 1.2: ONE frame writer; preClose hub drain — live-reader close ≈2 ms, was a 20 s taskkill escalation; event union now honest) | WORKING — committed `b747379`; nine gates green on final bytes | `.unlazy/arch-v11/gates/leaf-1.2.md` G1–G9 + senior review PASS (details `HANDOFF.md` §9.1) |
+| Destructive leaf-kit (arch-v11 leaf 1.3: ONE internal kit owns the RAW refusal list, the all-tier batched read, and the pre-write export for both destructive flows; their deliberate safety differences stay per-flow; the full driver is deferred with a recorded promotion trigger) | WORKING — committed `590a465`; ten gates gate-check-bound green on final bytes + senior review PASS | `.unlazy/arch-v11/gates/leaf-1.3.md` G1–G11 (details `HANDOFF.md` §9.2) |
 | Engine layer (stay_open protocol, hostile filenames, safety arg builder) | WORKING | `node app/scripts/verify-engine.mjs` → "engine layer verification passed" (leaf 1.1.1) |
 | Server read API (scan, metadata tiers, thumbnails, SSE, read-only console) | WORKING | `node app/scripts/verify-server.mjs` → "server smoke verification passed" (leaf 1.1.2) |
 | UI read surfaces (shell, browser, grid, inspector, console) | WORKING | `node app/scripts/verify-ui.mjs` → "ui build verification passed" (leaf 1.1.3) |
