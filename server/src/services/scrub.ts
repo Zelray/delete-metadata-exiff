@@ -34,11 +34,11 @@
  * skipped, never removed by a group delete (forbidden in v1).
  */
 import type { ScrubScope, TagEdit } from '@metadesk/shared';
-import { buildJsonReadArgs } from '../engine/argBuilder.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
+import { RAW_EXTENSIONS, readAllTierByPath, writeDestructiveExport } from './destructiveFlow.js';
 import { newRecordId } from './journal.js';
-import { matchesTagKey, WritePipeline, WritePipelineError, type ExecuteResult } from './writePipeline.js';
 import { normalizeExifPath } from './results.js';
+import { matchesTagKey, WritePipeline, WritePipelineError, type ExecuteResult } from './writePipeline.js';
 
 /** The phrase the user must type to run a scrub. Stable and documented. */
 export const SCRUB_CONFIRMATION_PHRASE = 'REMOVE AI METADATA';
@@ -146,11 +146,6 @@ export interface ScrubServiceOptions {
   dataDir: string;
 }
 
-const RAW_EXTENSIONS: ReadonlySet<string> = new Set([
-  'crw', 'cr2', 'cr3', 'nef', 'nrw', 'arw', 'srf', 'sr2', 'raf', 'orf',
-  'rw2', 'raw', 'rwl', 'dcr', 'kdc', 'mrw', 'pef', 'srw', 'x3f', '3fr', 'fff', 'iiq', 'erf',
-]);
-
 const DETECT_BATCH = 50;
 
 export class ScrubService {
@@ -190,15 +185,7 @@ export class ScrubService {
       if (readable.length === 0) continue;
 
       // The existing all-tier read shape: -j -G1 -a -struct over the batch.
-      const result = await this.engine.run(buildJsonReadArgs(readable), {
-        json: true,
-        timeoutMs: 60_000 + readable.length * 500,
-      });
-      const byPath = new Map<string, Record<string, unknown>>();
-      for (const doc of result.json as Array<Record<string, unknown>>) {
-        const source = doc['SourceFile'];
-        if (typeof source === 'string') byPath.set(normalizeExifPath(source), doc);
-      }
+      const byPath = await readAllTierByPath(this.engine, readable);
 
       for (const filePath of readable) {
         const doc = byPath.get(normalizeExifPath(filePath));
@@ -264,7 +251,7 @@ export class ScrubService {
     // Mandatory pre-write export of the FULL values being destroyed (req #14
     // pattern): the only copy of the prompts after the wipe is this file.
     const scrubId = detection.scrubId;
-    const exportPath = await this.pipeline.journal.writeScrubExport(scrubId, {
+    const exportPath = await writeDestructiveExport(this.pipeline.journal, scrubId, {
       scrubId,
       scope: detection.scope,
       exportedAt: new Date().toISOString(),

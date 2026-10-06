@@ -24,8 +24,8 @@
  * the preview's `notRemoved` honesty list instead of being silently skipped.
  */
 import type { ScrubScope, TagDiff, TagEdit } from '@metadesk/shared';
-import { buildJsonReadArgs } from '../engine/argBuilder.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
+import { RAW_EXTENSIONS, readAllTierByPath, writeDestructiveExport } from './destructiveFlow.js';
 import { newRecordId } from './journal.js';
 import { matchesTagKey, WritePipelineError, type PreviewEnvelope } from './writePipeline.js';
 
@@ -110,15 +110,6 @@ export const GPS_WIPE_TAGS: readonly string[] = Object.freeze([
 export function buildGpsDeleteEdits(): TagEdit[] {
   return GPS_WIPE_TAGS.map((tag) => ({ tag, op: 'delete' as const }));
 }
-
-/**
- * RAW extensions excluded from the destructive channel (same block list as the
- * AI scrub: RAW is limited to an approved safe tag set in this version).
- */
-const RAW_EXTENSIONS: ReadonlySet<string> = new Set([
-  'crw', 'cr2', 'cr3', 'nef', 'nrw', 'arw', 'srf', 'sr2', 'raf', 'orf',
-  'rw2', 'raw', 'rwl', 'dcr', 'kdc', 'mrw', 'pef', 'srw', 'x3f', '3fr', 'fff', 'iiq', 'erf',
-]);
 
 /**
  * Refuse RAW files outright: the strip promises "every GPS tag" per selection,
@@ -206,7 +197,7 @@ export class GpsStripService {
         }
       }
     }
-    const exportPath = await this.pipeline.journal.writeScrubExport(gpsStripId, {
+    const exportPath = await writeDestructiveExport(this.pipeline.journal, gpsStripId, {
       gpsStripId,
       scope: 'gps' satisfies ScrubScope,
       exportedAt: new Date().toISOString(),
@@ -234,17 +225,13 @@ export class GpsStripService {
     const rows: GpsNotRemovedRow[] = [];
     for (let offset = 0; offset < files.length; offset += SWEEP_BATCH) {
       const batch = files.slice(offset, offset + SWEEP_BATCH);
-      let docs: Array<Record<string, unknown>>;
+      let byPath: Map<string, Record<string, unknown>>;
       try {
-        const result = await this.engine.run(buildJsonReadArgs(batch), {
-          json: true,
-          timeoutMs: 60_000 + batch.length * 500,
-        });
-        docs = result.json as Array<Record<string, unknown>>;
+        byPath = await readAllTierByPath(this.engine, batch);
       } catch {
         return rows; // best effort honesty sweep; never blocks the strip
       }
-      for (const doc of docs) {
+      for (const doc of byPath.values()) {
         const source = doc['SourceFile'];
         if (typeof source !== 'string') continue;
         for (const key of Object.keys(doc)) {
