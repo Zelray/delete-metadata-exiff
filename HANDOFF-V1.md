@@ -200,12 +200,14 @@ supply-chain tripwire and fails the build). The shipped copy's hash flows into
 
 **Carried limits (documented in the release notes, not hidden):**
 
-- **SSE-held-open close** — `server.app.close()` blocks while an `/api/events` SSE
-  connection is open. Mitigated in the wrapped shape (webview navigated to `about:blank`
-  first → ≈1 s close); the DEV path (browser tab) still rides the launcher's 20 s grace
-  window and ends in the documented `taskkill /T /F` escalation — no orphans, journals
-  intact. Fix = close the SSE hub in a preClose/stop hook in `server/src/index.ts` — a
-  third server touch that C12 forbids; **v1.1**, orchestrator decision 2026-10-05.
+- **SSE-held-open close — RESOLVED (arch-v11 leaf 1.2, 2026-10-06; uncommitted at this
+  writing).** The prescribed fix landed: a `preClose` hook in `server/src/index.ts`
+  drains the hub (closeAll → one macrotask → `closeIdleConnections()`) BEFORE Fastify's
+  connection wait, so `app.close()` resolves in ~2 ms with a live reader. Regression
+  pin: `server/test/sse-close.test.ts` — proven to hang on pre-fix bytes (revert probe).
+  Both paths now close gracefully; the shell's `about:blank` trip is redundant but
+  harmless. In-flight (mid-batch) execute streams still delay close — pre-existing,
+  documented at the hook.
 - SmartScreen first-run (no signing certificate in v1); NSIS installer built but the zip is
   the distribution of record (install flow unexercised).
 - ComfyUI `prompt`/`workflow` chunks + C2PA/JUMBF: detect-only. Hidden-alpha data:
@@ -219,8 +221,8 @@ supply-chain tripwire and fails the build). The shipped copy's hash flows into
 **v1.1 backlog (do NOT pull forward without Mike):** full Strip/Clean wizard presets,
 write-capable console, CSV/JSON bulk import-export, geotag-from-GPX, rename/move-by-date,
 MIE/XMP sidecar archive-and-restore, tag database browser, standards-validation report,
-compare beyond `_original`, map panel with reverse geocoding, deep RAW editing, the SSE fix
-above, Settings engine-restore + `-api`, post-MVP dependency pass (the 5 vitest-tree
+compare beyond `_original`, map panel with reverse geocoding, deep RAW editing,
+Settings engine-restore + `-api`, post-MVP dependency pass (the 5 vitest-tree
 findings). Cosmetic: the three evidence retakes are DONE (leaf 2.3.1); new captures should
 keep `tests-e2e/__evidence-snapshot__/MANIFEST.txt` in sync (gate: `verify-e2e.mjs evidence`).
 

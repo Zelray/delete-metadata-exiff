@@ -329,3 +329,55 @@ remain the refresher); pre-existing `mapped.code as never` in writes.ts left per
 surgical rule. `.unlazy/metagui/BUILD-NOTES.md` route-mounting sentence was amended by
 the orchestrator (hook home moved to index.ts). A domain glossary now lives at
 `CONTEXT.md` (repo root) — keep terms consistent with it.
+
+### 9.1 arch-v11 leaf 1.2 — SSE single writer + graceful close (2026-10-06, UNCOMMITTED)
+
+Implemented architecture-review candidate 4 (also the SSE v1.1 backlog fix). Contract:
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.2" (synthesized from a second
+design-it-twice workflow, wf_8ca33b5f-3ec — both adversarial verifiers probe-tested the
+close physics on this machine's Node 22.22.3). Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.2.md`.
+
+What changed:
+
+- **ONE frame writer**: `writeSseFrame` exported from `routes/events.ts` (pure,
+  throw-through — each caller keeps its failure policy: hub disconnects, execute
+  stream swallows). Hub `sendTo` delegates; the execute-stream `send` delegates with
+  `{type, ...payload}` so `type` serializes third — frame bytes identical on both
+  transports (golden-bytes test pins EVERY `SseEvent` member against its legacy byte
+  string; the compiler forces new members into the pin).
+- **Graceful close, fixed**: a `preClose` hook in `index.ts` drains the hub
+  (`hub.closeAll()` → one `setImmediate` macrotask → `app.server.closeIdleConnections()`)
+  BEFORE Fastify waits on connections. With a live SSE reader, `app.close()` now
+  resolves in ~2 ms; on pre-fix bytes it never resolves (the documented 20 s
+  launcher-grace → `taskkill /T /F` dev-path escalation). The regression pin
+  (`server/test/sse-close.test.ts`) was revert-proven: with the hook removed it hangs
+  to its own 20 s timeout. The onClose ladder is untouched and idempotent; the wrapped
+  shell's `about:blank` trip is now redundant but harmless. In-flight (mid-batch)
+  execute streams still delay close — pre-existing, documented at the hook.
+- **The event union is honest**: `shared/src/api.ts` gained the four
+  emitted-but-unnamed members (folder-changed, mode-changed, write-error,
+  batch-cancelled) + `SseWatchChange` + `phase?` (read by the UI) +
+  `commandPreview?` (read by the client) + the ONE orchestrator-authorized amendment
+  (`SseWriteProgressEvent.filePath` required→optional — zero wire bytes; no emit site
+  sends it). `clients ignore unknown event types` still holds. `SseWriteErrorEvent.code`
+  is `string` — every code the mapper can emit is an ApiErrorCode member; the comment
+  in api.ts names them exactly.
+- **Watcher debounce seam**: `BuildServerOptions.watcherDebounceMs?` → `FolderWatcher`
+  (its own 250 default holds); `METADESK_WATCHER_DEBOUNCE_MS` env mirrors the heartbeat
+  pattern.
+
+Gates: all nine green on final bytes under orchestrator approval (engine suite 235
+tests incl. the new suites · server smoke · write pipeline · diagnostics · ui build ·
+ui write surfaces · e2e ALL incl. real-browser streamed write · launcher · frozen
+check with the api.ts allowance). Senior review: PASS, zero contract deviations; two
+MEDIUM honesty findings fixed by the orchestrator (write-error comment correction in
+api.ts; probe evidence recorded here and in the scope BUILD-NOTES) plus one test
+robustness nit (`app?.close()` guard). Evidence-snapshot PNGs were retaken by the e2e
+matrix (3 frames + manifest, mirrored byte-identically) — folded in at commit time.
+
+REJECTED by design (do not smuggle into the v1.1 console leaf or elsewhere): the
+SseSink/attachSink registry (its never-throw send policy is a probe-confirmed
+write-after-end crash path; revisit ONLY when the write-capable console needs a second
+sink consumer), `connect()` recomposition, SseEvent-typed writer signatures, any
+SseBridge edit, closeAll ending execute streams.

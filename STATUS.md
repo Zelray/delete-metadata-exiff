@@ -1,13 +1,14 @@
 # MetaDesk — STATUS (one-glance chart)
 
-Updated: 2026-10-06 (v1.0.0 released; **arch-v11 WriteSubsystem lift verified on the working tree, UNCOMMITTED — Mike's commit call pending**, see `HANDOFF.md` §9). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
+Updated: 2026-10-06 (v1.0.0 released; arch-v11 leaf 1.1 committed as `97511ff`+`421219b`; **leaf 1.2 SSE close fix verified on the working tree, UNCOMMITTED — Mike's commit call pending**, see `HANDOFF.md` §9). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
 Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/metagui-phase2/BUILD-NOTES.md`.
 
 ## Patient chart
 
 | Area | State | Verified by |
 |---|---|---|
-| Write subsystem composition root (arch-v11: ONE `WriteSubsystem` owns write mode + journal + pipeline/scrub/gps strip graph; routes thinned; mode-changed announce fused) | WORKING — all six gates green on final bytes; **UNCOMMITTED, pending Mike's commit call** | `.unlazy/arch-v11/gates/leaf-1.1.md` G1–G6 + senior review PASS (details `HANDOFF.md` §9) |
+| Write subsystem composition root (arch-v11: ONE `WriteSubsystem` owns write mode + journal + pipeline/scrub/gps strip graph; routes thinned; mode-changed announce fused) | WORKING — committed `97511ff` | `.unlazy/arch-v11/gates/leaf-1.1.md` G1–G6 + senior review PASS (details `HANDOFF.md` §9) |
+| SSE single writer + graceful close (arch-v11 leaf 1.2: ONE frame writer; preClose hub drain — live-reader close ≈2 ms, was a 20 s taskkill escalation; event union now honest) | WORKING — nine gates green on final bytes; **UNCOMMITTED, pending Mike's commit call** | `.unlazy/arch-v11/gates/leaf-1.2.md` G1–G9 + senior review PASS (details `HANDOFF.md` §9) |
 | Engine layer (stay_open protocol, hostile filenames, safety arg builder) | WORKING | `node app/scripts/verify-engine.mjs` → "engine layer verification passed" (leaf 1.1.1) |
 | Server read API (scan, metadata tiers, thumbnails, SSE, read-only console) | WORKING | `node app/scripts/verify-server.mjs` → "server smoke verification passed" (leaf 1.1.2) |
 | UI read surfaces (shell, browser, grid, inspector, console) | WORKING | `node app/scripts/verify-ui.mjs` → "ui build verification passed" (leaf 1.1.3) |
@@ -37,11 +38,6 @@ stop. Full plain-English detail: `README.md`.
 - **Settings: engine-path restore and the `-api` knob are deferred**; safety toggles there
   are hard-floored (visible, explained, not switchable-off).
 - **Write-capable console deferred to v1.1** — the v1 console is strictly read-only.
-- **SSE-held-open close (dev path only)** — with a live `/api/events` connection the
-  graceful close waits out the 20 s launcher window and ends in the documented
-  `taskkill /T /F` escalation (no orphans, journals intact). The packaged app is immune:
-  the shell navigates the webview away first and closes in ≈1 s. Fix is a v1.1 server
-  touch, forbidden while the freeze holds (`metagui-phase2/BUILD-NOTES.md`).
 - **No signing certificate in v1** — first run shows SmartScreen "Windows protected your
   PC" → More info → Run anyway (documented in README + release notes); NSIS
   installer is built but the portable zip is the distribution of record.
@@ -53,8 +49,9 @@ stop. Full plain-English detail: `README.md`.
 `HANDOFF-V1.md` (release runbook).**
 
 1. v1.1 backlog (Mike's call, per `..\HANDOFF-PHASE2.md` §2): write-capable console,
-   strip/clean wizard presets, CSV/JSON bulk import-export, geotag-from-GPX, the SSE
-   server fix, Settings engine-restore + `-api` knob, and the rest of the list.
+   strip/clean wizard presets, CSV/JSON bulk import-export, geotag-from-GPX,
+   Settings engine-restore + `-api` knob, and the rest of the list. (The SSE server
+   fix is DONE — arch-v11 leaf 1.2.)
 2. Post-MVP dependency pass for the 5 vitest-tree audit findings (dev-only; do NOT
    `npm audit fix --force`).
 3. If distribution widens: purchase a code-signing certificate (removes SmartScreen) and
