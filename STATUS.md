@@ -1,12 +1,13 @@
 # MetaDesk — STATUS (one-glance chart)
 
-Updated: 2026-10-05 (**v1.0.0 RELEASED** — desktop wrap complete, package verified, release tagged). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
+Updated: 2026-10-06 (v1.0.0 released; **arch-v11 WriteSubsystem lift verified on the working tree, UNCOMMITTED — Mike's commit call pending**, see `HANDOFF.md` §9). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`.
 Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/metagui-phase2/BUILD-NOTES.md`.
 
 ## Patient chart
 
 | Area | State | Verified by |
 |---|---|---|
+| Write subsystem composition root (arch-v11: ONE `WriteSubsystem` owns write mode + journal + pipeline/scrub/gps strip graph; routes thinned; mode-changed announce fused) | WORKING — all six gates green on final bytes; **UNCOMMITTED, pending Mike's commit call** | `.unlazy/arch-v11/gates/leaf-1.1.md` G1–G6 + senior review PASS (details `HANDOFF.md` §9) |
 | Engine layer (stay_open protocol, hostile filenames, safety arg builder) | WORKING | `node app/scripts/verify-engine.mjs` → "engine layer verification passed" (leaf 1.1.1) |
 | Server read API (scan, metadata tiers, thumbnails, SSE, read-only console) | WORKING | `node app/scripts/verify-server.mjs` → "server smoke verification passed" (leaf 1.1.2) |
 | UI read surfaces (shell, browser, grid, inspector, console) | WORKING | `node app/scripts/verify-ui.mjs` → "ui build verification passed" (leaf 1.1.3) |

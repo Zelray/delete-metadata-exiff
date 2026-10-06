@@ -1,7 +1,8 @@
 # MetaDesk — HANDOFF (agent-facing technical handoff)
 
 Audience: the next coding agent (or human contributor) picking up MetaDesk work.
-Updated: 2026-10-05, leaf 1.1.6 (wave 5). Mike-facing overview is `README.md`; the
+Updated: 2026-10-06, arch-v11 WriteSubsystem lift (orchestrator; post-release work).
+Mike-facing overview is `README.md`; the
 one-glance chart is `STATUS.md`; working rules for agent sessions are `CLAUDE.md`.
 
 **The contract of record is `../.unlazy/metagui/BUILD-NOTES.md`.** It pins the engine
@@ -280,3 +281,51 @@ Keep docs honest as work happens (STATUS = chart, HANDOFF = this file, README = 
   `.unlazy/metagui/status.log` and the confirmation re-audit verdict.
 - **Every verify gate in one place:** `verify-engine|server|ui|write|ui-write|launch|e2e`
   (§3 table gains one row: `verify-e2e.mjs` — subcommands as above, ~5 min for `all`).
+
+## 9. arch-v11 — the WriteSubsystem composition-root lift (2026-10-06, UNCOMMITTED)
+
+Implemented architecture-review candidate 1 ("one owner at the composition root"),
+approved by Mike. Contract of record for the change: `../.unlazy/arch-v11/BUILD-NOTES.md`
+(design, file-by-file plan, pinned constraints, parked items — read it before touching
+any of these files again). Acceptance ledger: `../.unlazy/arch-v11/gates/leaf-1.1.md`.
+
+What changed (wiring only — no route path, payload shape, or safety-core change):
+
+- **NEW `server/src/writeSubsystem.ts`** — `WriteSubsystem`, constructed once in
+  `buildServer`, is the ONE owner of: session write mode (private `WriteSessionState`;
+  `unlock()`/`lock()` are the only mutators and the `mode-changed` announce is fused
+  inside them via the `announce` ctor callback), THE Journal instance, and the
+  pipeline/scrub/gpsStrip graph (null iff engine null). It imports no Fastify types and
+  owns no lifecycle.
+- `routes/writes.ts` shrank to a `{ write }` dependency (the WriteSessionState class,
+  assembly block, onSend hook and `publishModeChanged` cast all moved/died); handler
+  bodies are byte-equivalent via four readonly aliases.
+- `routes/recovery.ts` receives the shared journal (its own `new Journal` is gone;
+  RecoveryService stays at its registrar). `routes/diagnostics.ts` reads
+  `write.healthFields()` + `getHealth` directly — the `app.inject` self-scrape is gone
+  (LiveHealth shape, defensive null path and the unreachable context.txt string kept).
+  `routes/events.ts` gained the one public `SseHub.publishModeChanged`.
+- `index.ts` hosts the onSend `/api/health` stamp (verbatim mechanism, now fed by
+  `write.healthFields()`), wires announce → hub, and returns `write` on
+  `BuildServerResult` (+`writeChunkSize?` on options — the only new test seam).
+- Tests: `routes.test.ts` now runs against the REAL `buildServer` composition (the
+  mock-hub twin is dead; every prior assertion kept). NEW
+  `test/write/composition.test.ts` (10 tests) pins journal flow-through, engine-null
+  503 on all seven write surfaces, the nullability invariant, unlock→bundle flip,
+  and mode-changed frames over a real SSE connection (announce fusion — previously
+  untested anywhere).
+
+Evidence: baseline gates green on d9a7258; after the lift, gates G1–G6 re-executed on
+final bytes (server smoke / write pipeline / diagnostics / ui write surfaces / engine
+suite 232 tests / frozen-file check). Senior review: PASS, zero contract deviations;
+review findings were fixed in the same pass (diagnostics comment honesty, `export type
+WriteMode`, journal-flow test header, GPS destructive-preview 503 surface). `tsc` clean.
+
+Parked / flagged (do not smuggle into other work — full list in arch-v11 BUILD-NOTES):
+getHealth freshness (production always shows the boot snapshot; diagnostics wording
+overstates — PM decision pending); the diagnostics bundle no longer refreshes the hub's
+hello-frame snapshot (accepted delta from deleting the self-scrape; launcher polls
+remain the refresher); pre-existing `mapped.code as never` in writes.ts left per the
+surgical rule. `.unlazy/metagui/BUILD-NOTES.md` route-mounting sentence was amended by
+the orchestrator (hook home moved to index.ts). A domain glossary now lives at
+`CONTEXT.md` (repo root) — keep terms consistent with it.
