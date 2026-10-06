@@ -6,8 +6,9 @@
  * `timestamp`, matching the shared SseEvent union. `hello` is sent on
  * connect, `heartbeat` every 15s (injectable for tests), `scan-progress` /
  * `scan-complete` during scans, and `folder-changed` when the watched folder
- * changes (an additive event type — same frame shape, extra union member the
- * client may safely ignore).
+ * changes. Every frame — here and on the streamed write execute response —
+ * is written by the ONE shared writer below, so both transports emit
+ * identical bytes.
  *
  * Token via query parameter is accepted for this route only (EventSource
  * cannot set headers); Origin/Host checks stay strict for SSE.
@@ -17,6 +18,26 @@ import type { HealthInfo } from '@metadesk/shared';
 import type { WatchChange } from '../services/watcher.js';
 
 export type SsePayload = Record<string, unknown> & { type: string };
+
+/**
+ * Write one SSE frame onto any string sink (a hub connection's raw reply or
+ * the write execute response). Pure and throw-through: it owns NO failure
+ * policy (hub sendTo catches -> disconnect; the execute stream catches ->
+ * swallow) and no seq counter — both stay caller-owned. Callers pass the
+ * payload WITHOUT `seq`/`timestamp` — the frame's own values lead the spread
+ * (a stray payload key overriding them is exactly what the golden-bytes pin
+ * guards against); `type` arrives first inside the payload, which keeps the
+ * frame JSON key order (seq, timestamp, type, ...) identical on both
+ * transports.
+ */
+export function writeSseFrame(
+  stream: { write(chunk: string): unknown },
+  seq: number,
+  payload: SsePayload,
+): void {
+  const frame = { seq, timestamp: new Date().toISOString(), ...payload };
+  stream.write(`event: ${payload.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+}
 
 interface SseConnection {
   reply: FastifyReply;
@@ -120,10 +141,12 @@ export class SseHub {
   }
 
   private sendTo(connection: SseConnection, payload: SsePayload): void {
-    const frame = { seq: connection.nextSeq, timestamp: new Date().toISOString(), ...payload };
+    // The seq bumps before the write (a failed write still consumed its seq —
+    // the connection is torn down right after anyway).
+    const seq = connection.nextSeq;
     connection.nextSeq += 1;
     try {
-      connection.reply.raw.write(`event: ${payload.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+      writeSseFrame(connection.reply.raw, seq, payload);
     } catch {
       this.disconnect(connection);
     }

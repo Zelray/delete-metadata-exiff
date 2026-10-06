@@ -48,6 +48,7 @@ import { GPS_CONFIRMATION_PHRASE } from '../services/gpsStrip.js';
 import type { BatchStartRecord } from '../services/journal.js';
 import type { WriteSubsystem } from '../writeSubsystem.js';
 import { sendError } from './api.js';
+import { writeSseFrame } from './events.js';
 
 export interface WriteRouteDeps {
   /** The ONE write subsystem (mode + journal + pipeline/scrub/strip). */
@@ -182,9 +183,12 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
         reply.raw.flushHeaders?.();
         let seq = 1;
         const send = (type: string, payload: Record<string, unknown>): void => {
-          const frame = { seq: seq++, timestamp: new Date().toISOString(), type, ...payload };
+          // `{ type, ...payload }` puts `type` third in the frame JSON —
+          // exactly where it sits today (the shared writer prepends seq +
+          // timestamp). Catch -> swallow: a vanished client never fails the
+          // batch itself.
           try {
-            reply.raw.write(`event: ${type}\ndata: ${JSON.stringify(frame)}\n\n`);
+            writeSseFrame(reply.raw, seq++, { type, ...payload });
           } catch {
             /* client vanished; the batch itself is unaffected */
           }

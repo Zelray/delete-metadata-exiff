@@ -65,6 +65,8 @@ export interface BuildServerOptions {
   sseHeartbeatMs?: number;
   /** Files per write execution chunk (tests may shrink it). Default 200. */
   writeChunkSize?: number;
+  /** Watcher event-burst debounce in ms. Default: FolderWatcher's own 250. */
+  watcherDebounceMs?: number;
   /** Fastify logger. Default false. */
   logger?: boolean;
 }
@@ -142,7 +144,10 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
     announce: (writeUnlocked) => hub.publishModeChanged(writeUnlocked),
     ...(options.writeChunkSize !== undefined ? { chunkSize: options.writeChunkSize } : {}),
   });
-  const watcher = new FolderWatcher();
+  // The debounce seam forwards UNDEFINED unless main() parsed an override, so
+  // FolderWatcher's own 250ms default stays the single definition of the
+  // cadence (never duplicated here).
+  const watcher = new FolderWatcher(options.watcherDebounceMs);
   const metadata = engine !== null ? new MetadataService(engine, getCatalog) : null;
   const thumbnails = new ThumbnailService(config);
 
@@ -243,6 +248,22 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
   });
 
   await registerStaticUi(app, config, { token, version: config.serverVersion });
+
+  // Close ordering (leaf 1.2): drain the SSE hub BEFORE the onClose ladder.
+  // An open /api/events stream otherwise holds app.close() open (HANDOFF-V1
+  // §6 prescription: close the SSE hub in a preClose/stop hook). The one
+  // macrotask yield lets each raw.end() finish detaching its socket before
+  // the idle sweep; closeIdleConnections() is deterministic hardening —
+  // Fastify's own idle sweep only runs behind a custom serverFactory, which
+  // this composition does not use (on Node 22 close is prompt even without
+  // the sweep). The onClose ladder below stays verbatim: closeAll is
+  // idempotent, so its second pass sees an empty set. In-flight (mid-batch)
+  // execute streams still delay close — pre-existing semantics, unchanged.
+  app.addHook('preClose', async () => {
+    hub.closeAll();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    app.server.closeIdleConnections();
+  });
 
   app.addHook('onClose', async () => {
     await watcher.stop();
@@ -436,11 +457,14 @@ async function main(): Promise<void> {
     executablePath: config.executablePath,
   });
 
-  // Test/dev seam: shorten the SSE heartbeat without touching the 15s default.
+  // Test/dev seams: shorten the SSE heartbeat or the watcher debounce without
+  // touching their defaults.
   const heartbeatRaw = Number.parseInt(process.env['METADESK_SSE_HEARTBEAT_MS'] ?? '', 10);
   const sseHeartbeatMs = Number.isFinite(heartbeatRaw) && heartbeatRaw > 0 ? heartbeatRaw : undefined;
+  const debounceRaw = Number.parseInt(process.env['METADESK_WATCHER_DEBOUNCE_MS'] ?? '', 10);
+  const watcherDebounceMs = Number.isFinite(debounceRaw) && debounceRaw > 0 ? debounceRaw : undefined;
 
-  const server = await buildServer({ config, health, sseHeartbeatMs });
+  const server = await buildServer({ config, health, sseHeartbeatMs, watcherDebounceMs });
 
   let stopping = false;
   const stop = (reason: string): void => {
