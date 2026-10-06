@@ -282,7 +282,7 @@ Keep docs honest as work happens (STATUS = chart, HANDOFF = this file, README = 
 - **Every verify gate in one place:** `verify-engine|server|ui|write|ui-write|launch|e2e`
   (§3 table gains one row: `verify-e2e.mjs` — subcommands as above, ~5 min for `all`).
 
-## 9. arch-v11 — the WriteSubsystem composition-root lift (2026-10-06, UNCOMMITTED)
+## 9. arch-v11 — the WriteSubsystem composition-root lift (2026-10-06)
 
 Implemented architecture-review candidate 1 ("one owner at the composition root"),
 approved by Mike. Contract of record for the change: `../.unlazy/arch-v11/BUILD-NOTES.md`
@@ -330,7 +330,7 @@ surgical rule. `.unlazy/metagui/BUILD-NOTES.md` route-mounting sentence was amen
 the orchestrator (hook home moved to index.ts). A domain glossary now lives at
 `CONTEXT.md` (repo root) — keep terms consistent with it.
 
-### 9.1 arch-v11 leaf 1.2 — SSE single writer + graceful close (2026-10-06, UNCOMMITTED)
+### 9.1 arch-v11 leaf 1.2 — SSE single writer + graceful close (2026-10-06, committed `b747379` + `572b97c` + `cb8eb6c`)
 
 Implemented architecture-review candidate 4 (also the SSE v1.1 backlog fix). Contract:
 `../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.2" (synthesized from a second
@@ -374,7 +374,7 @@ check with the api.ts allowance). Senior review: PASS, zero contract deviations;
 MEDIUM honesty findings fixed by the orchestrator (write-error comment correction in
 api.ts; probe evidence recorded here and in the scope BUILD-NOTES) plus one test
 robustness nit (`app?.close()` guard). Evidence-snapshot PNGs were retaken by the e2e
-matrix (3 frames + manifest, mirrored byte-identically) — folded in at commit time.
+matrix (3 frames + manifest, mirrored byte-identically) — folded in as `572b97c`.
 
 REJECTED by design (do not smuggle into the v1.1 console leaf or elsewhere): the
 SseSink/attachSink registry (its never-throw send policy is a probe-confirmed
