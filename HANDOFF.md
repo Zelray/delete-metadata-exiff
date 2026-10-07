@@ -530,3 +530,70 @@ advisories on the public repo (5 critical / 4 high / 15 moderate → `npm audit`
 Flagged for the next maintenance touch (do not smuggle): root `engines` floor tighten
 to `>=22.12.0` (review LOW-1); manifest-writer header (UTC-date rollover + stale
 "leaf 2.3.1" label) fold into any future manifest touch.
+
+### 9.5 arch-v11 leaf 1.5 — UI: the session-scoped batch in flight (2026-10-07, committed `077847c` + `7730292`)
+
+Implemented architecture-review candidate 5 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.5" — itself a three-verifier merge of a
+4-designer round (workflow wf_c2ad132b-463; 7/7 returned; the card's premises were
+measured, and the round found the bug BIGGER than the card: mid-run cancel is
+dead-by-occlusion even without navigation, keyboard/in-app nav is reachable mid-run
+(no focus trap; packaged WebView2 leaves Alt+Left/F5 live), graceful cancel is honored
+only between 200-file chunks, and the hub carries no write progress). Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.5.md`.
+
+What changed (UI + tests + e2e only; zero shared/server/engine/bin/vendor bytes):
+
+- **ONE transient `writeRun` slice** in `ui/src/state/store.ts` (busy/progress/error/
+  activeBatchId/cancelState/refusal/groups/config/startedRoute/completion) — never
+  persisted (partialize untouched, test-pinned). `useWriteRun.tsx` becomes a thin
+  reader: session single-flight guards on review()+run(), `startedRoute` captured at
+  run() entry, completion latch written in the SUCCESS branch ('done') and CATCH
+  branch ('failed') — never from finally. Every firing call stays physically in the
+  runner file (source-contract test byte-identical); mergeOutcomes/recordLastWrite
+  untouched. Types relocated verbatim to `write/types.ts` with re-exports.
+- **In-dialog flight section** (`SaveReviewModal` one merged typed `flight?` prop):
+  progress lines while busy; 'Cancel this batch' ONLY once the stream's batchId frame
+  has landed (streamed edits arm); inline two-step confirm rendering the ONE shared
+  `CANCEL_BATCH_CONFIRM_PARAGRAPH` (`write/copy.ts`, byte-identical in both surfaces);
+  honest 404 note. Gate mechanics byte-identical; strictly additive typed props; no
+  Escape/X (by design); no liveness claims (progress is last-frame-annotated).
+- **Mounts**: the five views keep their modal mounts (view files byte-identical except
+  BatchPanel's constant import + its promise-line honest conditional); ONE
+  `WriteRunModalHost` in AppShell covers the four non-runner routes via `RUNNER_ROUTES`
+  (derived from ROUTES in router.ts — compile-typed, no second hardcoded list);
+  nine-route zero-or-one dialog partition pinned. Help-over-gate stacking preserved;
+  no new z-tiers.
+- **Honest completion**: origin route → navigate('/results') as HEAD; away → no yank,
+  shell 'Write finished — the Results report is ready.' + View report (clears on
+  click/new review); failure → 'check History' note, never success copy. StatusStrip
+  writer line reflects the flight while one is in flight.
+- **Tests**: NEW `write/writeRun.session.test.tsx` (13 tests, 8 pin families:
+  survival across unmount, in-dialog cancel lifecycle, single-flight, nine-route host
+  partition, latch truth, no-cancel-on-non-streamed arms, partialize exclusion,
+  fidelity guard); the two big suites changed by exactly one import + one beforeEach
+  reset line each (session state survives unmount BY DESIGN). matrix.mjs: two
+  DOM-asserted real-browser flows — mid-write cancel through the in-dialog surface on
+  a ~400-file generated multi-chunk fixture (dedicated mkdtemp folder; the REAL
+  between-chunks cancellation, ~2.8 s write window, full matrix ~43 s vs 360 s
+  watchdog) and back-mid-write (gate survives Back, no-yank latch) — plus the stale
+  known-bug comment fix that now HARD-FAILS streamed-write failures. RETAKE contract
+  untouched (still 01/09/10/06-scrub-confirm).
+
+Gates: G1–G9 DOUBLE-BOUND green on final bytes (two consecutive gate-check passes
+2026-10-07; builder's own sequential run also green ×3 on the matrix during
+development). Senior review (G10): PASS, zero CRITICAL/HIGH/MEDIUM; LOW-1 (latch copy
+wording vs contract shorthand — both oracles assert the shipped copy) and LOW-2 (latch
+also appears when already on /results — harmless no-op) ACCEPTED; NIT-1 (router.ts:8
+stale 'six routes' comment — pre-existing) flagged, orphan rule. Evidence churn: the
+four RETAKE_SET PNGs + their MANIFEST lines only. ZERO code changes after gate
+binding. Committed: `077847c` (code+tests) + `7730292` (evidence retakes) + docs
+closeout. **LOCAL commits — push pending Mike's word (public repo).**
+
+Flagged for the v1.1 backlog (BUILD-NOTES §"Leaf 1.5 outcome" + declined/promotion
+lists; do not smuggle): a Home scan stays preview-local until 'Open grid', so Batch
+can sit on the previous folder's scope (UX fact surfaced by the e2e work); hub
+write-progress topic; batch re-attach/status endpoint (real reload recovery); focus
+trap on the gate modal; deletion of BatchPanel's occluded view chrome (with the
+cancel.wiring pin owner's consent); whole-runner hoist (useWriteRunner/WriteRunner
+deletion) as optional hygiene; router.ts:8 comment touch.
