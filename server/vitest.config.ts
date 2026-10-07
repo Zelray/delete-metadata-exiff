@@ -10,7 +10,7 @@ export default defineConfig({
       '@metadesk/shared': path.resolve(here, '../shared/src/index.ts'),
     },
   },
-  esbuild: {
+  oxc: {
     target: 'es2022',
   },
   test: {
@@ -18,9 +18,8 @@ export default defineConfig({
     // Engine tests drive a real exiftool.exe process; keep them sequential so
     // protocol framing and shutdown assertions are deterministic.
     pool: 'forks',
-    poolOptions: {
-      forks: { singleFork: true },
-    },
+    // Vitest 4+ pool rework: `poolOptions.forks.singleFork` became `maxWorkers: 1`.
+    maxWorkers: 1,
     testTimeout: 60_000,
     hookTimeout: 60_000,
     environment: 'node',
