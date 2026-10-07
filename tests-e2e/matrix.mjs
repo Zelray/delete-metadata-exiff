@@ -22,6 +22,10 @@
  *   10-settings        FULL-PAGE settings: engine card, all FIVE locked safety
  *                      floors, recovery + the Support diagnostics card
  *                      (leaf 2.3.1 retake)
+ * arch-v11 leaf 1.5 adds two DOM-asserted flows AFTER the frames (no new
+ * evidence): mid-write cancel through the in-dialog surface on a generated
+ * ~400-file two-chunk fixture in a DEDICATED folder, and back-mid-write with
+ * the no-yank completion latch.
  * API-level cases (no browser): a >240-character path is refused with the
  * plain-English message; a genuinely locked file fails per-file while the
  * rest of its batch updates and verifies.
@@ -458,40 +462,25 @@ async function run() {
   await expectVisible(review.getByText('Backup first:'), 'backup statement');
   await shot('04-save-review.png');
 
-  // The confirm runs the streamed write. KNOWN BUG (pre-existing, outside
-  // this leaf's OWNS): client.ts executeWrite's {stream:true} path sends no
-  // Content-Type header, so Fastify never parses the body and the server
-  // answers "The body must include {previewId: string}" — every UI write that
-  // streams is broken in the released bundle (the jsdom suite stubs fetch, so
-  // only this real-browser matrix could see it). Try it; when it works (post
-  // fix) assert the verified result; when it hits the known signature,
-  // record the bug, cancel the review (the safe default) and continue — the
-  // three-valued Results evidence below comes from the scrub flow, which uses
-  // the non-streaming JSON path that works.
+  // The confirm runs the streamed write. The OLD known bug here — client.ts
+  // executeWrite's {stream:true} path sent no Content-Type, so Fastify never
+  // parsed the body and every UI write 400'd with "The body must include
+  // {previewId: string}" — was FIXED in client.ts (the stream fetch now sets
+  // the JSON Content-Type header), so this write lands on Results every run.
+  // A failure here is a REGRESSION, not an excuse: fail loudly.
   await review.getByRole('button', { name: /^Write 1 file$/ }).click();
   const writeLanded = await page
     .waitForURL(/#\/results/, { timeout: 45_000 })
     .then(() => true)
     .catch(() => false);
-  if (writeLanded) {
-    await expectVisible(page.locator('[aria-label="Outcome counts"]'), 'results count cards');
-    await expectVisible(page.getByText('updated · verified').first(), 'verified outcome row');
-    step('edit-write', 'streamed write executed; verified outcome on Results');
-  } else {
-    const banner = page.getByText('The body must include {"previewId": string}.');
-    const isKnownBug = (await banner.count()) > 0 && (await banner.first().isVisible());
-    if (!isKnownBug) {
-      fail(
-        `The streamed UI write failed in a NEW way: ${(await page.locator('body').innerText()).slice(0, 400)}`,
-      );
-    }
-    knownBug(
-      'executeWrite {stream:true} missing Content-Type',
-      'every Edit/Batch UI write 400s ("The body must include previewId") in the released bundle; fix: set Content-Type application/json in client.ts executeWrite stream fetch',
+  if (!writeLanded) {
+    fail(
+      `The streamed UI write did not land on Results: ${(await page.locator('body').innerText()).slice(0, 400)}`,
     );
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expectVisible(page.getByRole('heading', { name: 'Edit', exact: true }), 'back on the edit panel');
   }
+  await expectVisible(page.locator('[aria-label="Outcome counts"]'), 'results count cards');
+  await expectVisible(page.getByText('updated · verified').first(), 'verified outcome row');
+  step('edit-write', 'streamed write executed; verified outcome on Results');
 
   // 05/06 — the AI-scrub wizard on the SD fixture: findings, cannot-remove
   // honesty, and the typed-phrase gate. The edit's selection is cleared first
@@ -603,6 +592,115 @@ async function run() {
   if ((await page.getByText('locked ON').count()) < 5) fail('The viewport resize left a locked safety floor unseen');
   await shot('10-settings.png');
   await page.setViewportSize({ width: 1280, height: 800 });
+
+  // ---- arch-v11 leaf 1.5: the session-scoped batch in flight ------------------
+  // Two DOM-asserted flows (NO new evidence frames — everything above keeps its
+  // committed bytes). The fixture is a DEDICATED ~400-file folder (NOT the
+  // depicted fixture folder, so the pinned frames' scans stay byte-identical),
+  // sized to run TWO 200-file chunks: graceful cancel is honored only BETWEEN
+  // chunks, so only a multi-chunk batch can produce a real cancellation with
+  // not-attempted rows. A single-chunk batch would honestly land
+  // requested-then-completed (or a 404) instead — never assert cancel truth on
+  // one of those.
+  const cancelPhotos = await makeFixtureDir('metadesk-matrix-cancel-');
+  const CANCEL_FILES = 400;
+  for (let i = 0; i < CANCEL_FILES; i += 1) {
+    await cancelPhotos.put(`batch-${String(i).padStart(3, '0')}.png`);
+  }
+  step('cancel-fixture', `${CANCEL_FILES} tiny PNGs in a dedicated folder (two 200-file chunks)`);
+
+  const batchPanelFor = async (title) => {
+    await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'Batch apply' }).click();
+    await page.getByText(/All filtered files \(/).click();
+    await page.getByLabel('Title', { exact: true }).fill(title);
+    await page.getByRole('button', { name: 'Preview batch' }).click();
+    const batchReview = page.locator('[role="dialog"][aria-label^="Batch review"]');
+    await expectVisible(batchReview, 'the batch review gate');
+    // The multi-chunk sizing is load-bearing (cancel truth lives between
+    // chunks) — the gate's own chunk note is the wire-level proof of it.
+    const noteShown = await batchReview
+      .getByText(/chunks/)
+      .first()
+      .waitFor({ state: 'visible', timeout: 20_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!noteShown) {
+      fail(
+        `The two-chunk honesty note is missing (fixture must run two 200-file chunks). Dialog text: ${(
+          await batchReview.innerText().catch(() => '')
+        ).slice(0, 500)}`,
+      );
+    }
+    return batchReview;
+  };
+
+  // Scan the dedicated folder through the app's own Home form (this scanResult
+  // feeds both flows below). The preflight card may already be on screen from
+  // the earlier depicted-fixture flow, so wait for the NEW scan's Open-grid
+  // count ("Open grid (400 files)"), not merely for the card's existence —
+  // and the store's scanResult is only written by Open grid, so click through.
+  await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'Browse' }).click();
+  await page.getByLabel('Absolute folder path').fill(cancelPhotos.dir);
+  await page.getByRole('button', { name: 'Scan', exact: true }).click();
+  const openGrid400 = page.getByRole('button', { name: 'Open grid (400 files)' });
+  await expectVisible(openGrid400, 'the dedicated-fixture preflight (400 files)', 30_000);
+  await openGrid400.click();
+  await expectVisible(page.getByRole('list').first(), 'the dedicated-fixture grid');
+
+  // (a) MID-WRITE CANCEL through the IN-DIALOG surface: once the batch id frame
+  // lands, the modal itself offers progress + Cancel — reachable, because
+  // Playwright's actionability check refuses clicks on occluded elements (the
+  // occlusion oracle). The old view chrome behind the scrim stays where it is;
+  // this is the surface a mouse user can actually reach mid-run.
+  await batchPanelFor('Cancelled by the matrix');
+  const chunkedWriteStart = Date.now();
+  await page.locator('[role="dialog"]').getByRole('button', { name: /^Write 400 files$/ }).click();
+  const inDialogCancel = page.locator('[role="dialog"]').getByRole('button', { name: 'Cancel this batch' });
+  await expectVisible(inDialogCancel, 'the in-dialog Cancel (the batch id frame landed)');
+  await expectVisible(
+    page.locator('[role="dialog"]').getByText('Writing — phase'),
+    'in-dialog streamed progress',
+  );
+  await inDialogCancel.click();
+  await expectVisible(
+    page.locator('[role="dialog"]').getByText('The file being written right now finishes safely'),
+    'the shared cancel-confirm paragraph, inside the dialog',
+  );
+  await page.locator('[role="dialog"]').getByRole('button', { name: 'Request cancel' }).click();
+  await expectVisible(page.locator('[role="dialog"]').getByText(/Cancel requested/), 'the requested note');
+  await page.waitForURL(/#\/results/, { timeout: 120_000 });
+  const chunkedWriteMs = Date.now() - chunkedWriteStart;
+  await expectVisible(page.getByText('You cancelled this batch'), 'the cancelled Results report');
+  await expectVisible(page.getByText(/never attempted/i).first(), 'the not-attempted honesty');
+  if ((await page.getByText('not attempted — batch cancelled').count()) < 1) {
+    fail('The cancelled batch shows no not-attempted rows — the cancel was not honored between chunks');
+  }
+  step('mid-write-cancel', `cancelled between chunks through the in-dialog surface (write window ${(chunkedWriteMs / 1000).toFixed(1)}s)`);
+
+  // (b) BACK-MID-WRITE: the busy gate FOLLOWS the user across a Back
+  // navigation, completion never yanks, and the latch offers the report.
+  await page.getByRole('navigation', { name: 'Tools' }).getByRole('button', { name: 'History' }).click();
+  await expectVisible(page.getByText(/batch\(es\)/), 'History visited first (Back lands here)');
+  await batchPanelFor('Back-nav matrix batch');
+  await page.locator('[role="dialog"]').getByRole('button', { name: /^Write 400 files$/ }).click();
+  await expectVisible(inDialogCancel, 'the in-dialog Cancel on the second write');
+  await page.goBack();
+  await expectVisible(page.locator('[role="dialog"]'), 'the busy gate survived the Back');
+  await expectVisible(page.getByText('Working…'), 'the gate is busy, not closed');
+  await expectVisible(page.getByText('Write in progress'), 'StatusStrip reflects the flight');
+  await expectVisible(
+    page.locator('[role="dialog"]').getByText('Writing — phase'),
+    'progress kept streaming after the route change',
+  );
+  const viewReport = page.getByRole('button', { name: 'View report' });
+  await expectVisible(viewReport, 'the Write finished latch', 120_000);
+  if (!page.url().includes('#/history')) {
+    fail(`Completion yanked the user back (at ${page.url()}) — the no-yank rule broke`);
+  }
+  await viewReport.click();
+  await page.waitForURL(/#\/results/, { timeout: 20_000 });
+  await expectVisible(page.getByText('Back-nav matrix batch').first(), 'the second batch on Results');
+  step('back-mid-write', 'gate survived Back; completion latched with no yank; View report landed on Results');
 
   const realErrors = consoleErrors.filter((e) => !/favicon/i.test(e));
   if (realErrors.length > 0) fail(`Page errors during the flows: ${realErrors.slice(0, 3).join(' | ')}`);

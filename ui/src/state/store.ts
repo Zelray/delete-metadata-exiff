@@ -1,13 +1,21 @@
 /**
  * UI state (zustand). Server state lives in TanStack Query — this store only
  * holds view state that outlives a query cache: selection, the Command
- * Preview drawer, badge knowledge learned from detail reads, and the small
- * preferences that persist to localStorage.
+ * Preview drawer, badge knowledge learned from detail reads, the small
+ * preferences that persist to localStorage, and the TRANSIENT session-scoped
+ * write run (busy/progress/cancel — never persisted; see WriteRunState).
  */
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { FolderScanRequest, FolderScanResult } from '@metadesk/shared';
-import type { BatchOutcome, TagEdit } from '../write/types';
+import type {
+  BatchOutcome,
+  CancelRequestState,
+  PreviewGroup,
+  TagEdit,
+  WriteProgress,
+  WriteRunConfig,
+} from '../write/types';
 
 /** The most recent executed write — the Results Report's subject (/results). */
 export interface LastWrite {
@@ -47,6 +55,58 @@ export interface CommandHistoryEntry {
   ok: boolean;
   at: string;
 }
+
+/**
+ * The ONE session-scoped write run in flight (arch-v11 leaf 1.5). Every
+ * write-running state — the busy gate, streamed progress, the cancel state,
+ * the staged review, and the honest terminal latch — lives here instead of in
+ * per-view useState, so a run survives any navigation and every surface (the
+ * five view mounts and the shell host) reads the same truth. Transient BY
+ * RULE: a persisted flight would LIE after a reload (a vanished client never
+ * fails the batch and nothing re-attaches), so partialize never carries it.
+ */
+export interface WriteRunState {
+  /** true while a write is executing — the session-wide single-flight gate. */
+  busy: boolean;
+  /** Last streamed progress frame (null on the non-streamed arms). */
+  progress: WriteProgress | null;
+  /** The edits-arm execute error (null when none — views check `!== null`). */
+  error: unknown;
+  /**
+   * The batch id of the write currently executing with {stream:true} — the
+   * cancel target. null whenever nothing streamable is in flight.
+   */
+  activeBatchId: string | null;
+  /** After a cancel request: what the server said (for the honest note). */
+  cancelState: CancelRequestState | null;
+  /** The server's refusal of the last destructive confirm, verbatim. */
+  refusal: string | null;
+  /** The staged review (at most ONE per session; a new review replaces it). */
+  groups: PreviewGroup[] | null;
+  config: WriteRunConfig | null;
+  /** The route the run started from — completion compares against it. */
+  startedRoute: string | null;
+  /**
+   * Terminal latch: 'done' written in the SUCCESS branch, 'failed' in the
+   * CATCH branch — never derived from finally, so a failed run can never
+   * claim success. Cleared by any new review/run and by the View report click.
+   */
+  completion: 'done' | 'failed' | null;
+}
+
+/** The idle flight — also the flight-aware suites' beforeEach reset value. */
+export const WRITE_RUN_IDLE: WriteRunState = {
+  busy: false,
+  progress: null,
+  error: null,
+  activeBatchId: null,
+  cancelState: null,
+  refusal: null,
+  groups: null,
+  config: null,
+  startedRoute: null,
+  completion: null,
+};
 
 interface UiState {
   // --- mode (safety UX) ---
@@ -107,6 +167,11 @@ interface UiState {
   // --- background progress (SSE) ---
   scanProgress: { scanId: string; filesScanned: number; currentDirectory?: string } | null;
   setScanProgress: (p: UiState['scanProgress']) => void;
+
+  // --- the write run in flight (session-scoped, transient — never persisted) ---
+  writeRun: WriteRunState;
+  /** ONE shallow-merge setter for the flight slice. */
+  setWriteRun: (patch: Partial<WriteRunState>) => void;
 }
 
 let commandCounter = 0;
@@ -175,6 +240,9 @@ export const useUiStore = create<UiState>()(
 
       scanProgress: null,
       setScanProgress: (p) => set({ scanProgress: p }),
+
+      writeRun: { ...WRITE_RUN_IDLE },
+      setWriteRun: (patch) => set((s) => ({ writeRun: { ...s.writeRun, ...patch } })),
     }),
     {
       name: 'metadesk-ui',

@@ -16,6 +16,9 @@ export function StatusStrip() {
   const selectedCount = useUiStore((s) => s.selectedPaths.length);
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
+  // The session's write run in flight — the writer line reflects it while one
+  // is in flight (health's lock data alone used to say "idle" mid-run).
+  const writeBusy = useUiStore((s) => s.writeRun.busy);
 
   const version = health?.version !== undefined && health.version !== '' ? health.version : readBootstrap().version;
   const versionOk = health?.ok === true;
@@ -55,8 +58,16 @@ export function StatusStrip() {
       )}
 
       <span className="ml-auto flex items-center gap-3">
-        <span title={health?.readOnlyFallback === true ? 'Read-only session (engine not fully verified)' : 'Single-writer lock: no write in progress'}>
-          {health?.readOnlyFallback === true ? 'Read-only session' : 'Writer idle'}
+        <span
+          title={
+            health?.readOnlyFallback === true
+              ? 'Read-only session (engine not fully verified)'
+              : writeBusy
+                ? 'A write is in flight — the single-writer lock holds until it finishes.'
+                : 'Single-writer lock: no write in progress'
+          }
+        >
+          {health?.readOnlyFallback === true ? 'Read-only session' : writeBusy ? 'Write in progress' : 'Writer idle'}
         </span>
         <Segmented<ThemeChoice>
           ariaLabel="Theme"

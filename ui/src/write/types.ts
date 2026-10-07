@@ -10,6 +10,7 @@ import type {
   BatchOutcome,
   ScrubScope,
   TagDiff,
+  TagEdit,
   WriteOutcome,
   WritePreview,
 } from '@metadesk/shared';
@@ -331,3 +332,83 @@ export type {
   WritePreview,
   WritePreviewFile,
 } from '@metadesk/shared';
+
+// ---- the write run (client-side view-model types, relocated verbatim) ---------
+//
+// These describe the runner's plan and flight, not a server response — but the
+// session-scoped writeRun slice in state/store.ts carries them, so they live
+// here with the rest of the write vocabulary. Their old homes (useWriteRun.tsx,
+// SaveReviewModal.tsx) re-export them, so no import path changes.
+
+/**
+ * Which write this run fires. The old config fields (edits / undoBatchId)
+ * folded into the plan; every existing caller stays on its current arm.
+ */
+export type WriteRunPlan =
+  | { kind: 'edits'; edits: TagEdit[]; timezone?: string }
+  | { kind: 'undo'; undoBatchId: string }
+  /** A previewed destructive execute — destructive when the envelope is set. */
+  | { kind: 'preview'; destructive?: { confirmationPhrase: string } }
+  | {
+      kind: 'scrub';
+      /** Exactly the files the wipe targets — sent as {files, confirm}. */
+      files: string[];
+      /** The server's phrase DISPLAYS in the gate; only the typed phrase is sent. */
+      destructive: { confirmationPhrase: string };
+      /** Recorded as lastWrite.edits (synthesized from affectedTags). */
+      recordEdits: TagEdit[];
+      /** REQUIRED: the caller's post-write work (the honest badge refresh). */
+      onRecorded: (result: ScrubExecuteResponse) => void;
+    };
+
+export type WriteRunConfig = WriteRunPlan & {
+  title: string;
+  /** Honesty copy under the gate's destructive heading. */
+  destructiveNote?: string;
+  /** Keeps a destructive flow's confirm-button copy ('Strip GPS data now'…). */
+  confirmLabel?: string;
+  /** Detected items that will NOT be removed — shown at the consent moment. */
+  cannotRemove?: Array<{ filePath: string; tag: string; reason: string }>;
+  /** scrub-sidecar extras recorded with lastWrite (the preview's export). */
+  scrubExtras?: { exportedValuesPath: string; notRemoved: Array<{ filePath: string; tag: string; reason: string }> };
+  /** Where to land after success (default /results). */
+  goToResults?: boolean;
+};
+
+export interface WriteProgress {
+  phase: string;
+  index: number;
+  total: number;
+}
+
+/**
+ * Result of a graceful cancel request (POST /api/write/cancel). `requested`
+ * means the server accepted the flag (honored between chunks); `refused`
+ * means the batch had already finished — honestly reported, nothing changed.
+ */
+export interface CancelRequestState {
+  status: 'requested' | 'refused';
+  note: string;
+}
+
+/**
+ * One preview the modal gates, and the fidelity it can honestly claim:
+ * 'previewed' groups carry the server's exact per-file diff and argv (the
+ * ordinary write channel); 'detected' groups carry a scan projection — the
+ * destructive wipe re-detects from a fresh scan before it runs, so no exact
+ * command exists and the exact-change claims are suppressed BY MECHANISM.
+ */
+export type PreviewGroup =
+  | {
+      label: string;
+      /** The server previewed the exact change — argv + command preview are true. */
+      evidence: 'previewed';
+      preview: WritePreview;
+      commandPreview: string[];
+    }
+  | {
+      label: string;
+      /** Detection-grade fidelity: rows are what the scan found, values as-scanned. */
+      evidence: 'detected';
+      detected: DetectedPreview;
+    };

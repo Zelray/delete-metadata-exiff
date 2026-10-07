@@ -33,7 +33,7 @@ import { SaveReviewModal, type PreviewGroup } from '../components/SaveReviewModa
 import { EditPanel } from '../views/EditPanel';
 import { ResultsReport } from '../views/ResultsReport';
 import { ScrubWizard } from '../views/ScrubWizard';
-import { useUiStore } from '../state/store';
+import { useUiStore, WRITE_RUN_IDLE } from '../state/store';
 import { executeWrite } from '../api/client';
 import type { DetectedPreview, WritePreview, WritePreviewFile } from './types';
 
@@ -179,6 +179,7 @@ beforeEach(() => {
     badges: {},
     nextCommand: null,
     commandHistory: [],
+    writeRun: { ...WRITE_RUN_IDLE },
   });
 });
 

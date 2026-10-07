@@ -21,6 +21,23 @@ export const ROUTES = [
 
 export type Route = (typeof ROUTES)[number];
 
+/**
+ * The five routes whose views mount the write runner — and with it the Save
+ * Review modal. Derived FROM ROUTES (typed as Route, so a rename or a typo is
+ * a compile error, never a silently un-hosted gate): on these routes the
+ * view's own mount renders the modal; on every OTHER route the shell's
+ * WriteRunModalHost renders the same modal, so the gate follows the user
+ * (arch-v11 leaf 1.5) without a second hand-written route list.
+ */
+const RUNNER_ROUTE_SET: ReadonlySet<Route> = new Set<Route>([
+  '/edit',
+  '/batch',
+  '/results',
+  '/history',
+  '/scrub',
+]);
+export const RUNNER_ROUTES: readonly Route[] = ROUTES.filter((route) => RUNNER_ROUTE_SET.has(route));
+
 function parseHash(): Route {
   const raw = window.location.hash.replace(/^#/, '') || '/';
   const path = raw.split('?')[0] ?? '/';

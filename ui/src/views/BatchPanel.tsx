@@ -10,6 +10,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import type { PreviewGroup } from '../components/SaveReviewModal';
+import { CANCEL_BATCH_CONFIRM_PARAGRAPH } from '../write/copy';
 import { EditFields } from '../write/EditFields';
 import {
   TIMEZONES,
@@ -367,8 +368,9 @@ export function BatchPanel() {
           </div>
           <div className="mt-1">
             {runner.progress.index} of {runner.progress.total} files processed. MetaDesk never
-            hard-kills a write: this runs to completion chunk by chunk, and the Results report opens
-            when it finishes.
+            hard-kills a write: this runs to completion chunk by chunk. Stay on this panel and the
+            Results report opens when the write finishes; leave, and the app tells you it finished
+            there instead of switching panels for you.
           </div>
           {runner.cancelState !== null && (
             <div className="mt-1 text-muted-foreground" role="status">
@@ -392,11 +394,7 @@ export function BatchPanel() {
         }}
         onCancel={() => setCancelConfirmOpen(false)}
       >
-        <p>
-          The file being written right now finishes safely with its full backup and verification.
-          Already-written files keep their verified backups; the rest will not be attempted, and
-          the Results report lists every one of them honestly.
-        </p>
+        <p>{CANCEL_BATCH_CONFIRM_PARAGRAPH}</p>
       </ConfirmDialog>
 
       {runner.modal}

@@ -1,5 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { DetectedPreview, TagDiff, WritePreview, WritePreviewFile } from '../write/types';
+import type {
+  CancelRequestState,
+  PreviewGroup,
+  TagDiff,
+  WritePreviewFile,
+  WriteProgress,
+} from '../write/types';
+import { CANCEL_BATCH_CONFIRM_PARAGRAPH } from '../write/copy';
 import { chunkEstimate } from '../write/fields';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -8,27 +15,9 @@ import { CommandPreviewChips } from './CommandPreviewChips';
 import { basename } from '../lib/format';
 import { copyText } from '../lib/clipboard';
 
-/**
- * One preview the modal gates, and the fidelity it can honestly claim:
- * 'previewed' groups carry the server's exact per-file diff and argv (the
- * ordinary write channel); 'detected' groups carry a scan projection — the
- * destructive wipe re-detects from a fresh scan before it runs, so no exact
- * command exists and the exact-change claims are suppressed BY MECHANISM.
- */
-export type PreviewGroup =
-  | {
-      label: string;
-      /** The server previewed the exact change — argv + command preview are true. */
-      evidence: 'previewed';
-      preview: WritePreview;
-      commandPreview: string[];
-    }
-  | {
-      label: string;
-      /** Detection-grade fidelity: rows are what the scan found, values as-scanned. */
-      evidence: 'detected';
-      detected: DetectedPreview;
-    };
+// The staged-review group type relocated to write/types.ts (the session's
+// writeRun slice carries it); re-exported so every existing import path works.
+export type { PreviewGroup } from '../write/types';
 
 /** The file shape both group kinds share (argv exists only on 'previewed'). */
 type GateFile = Pick<WritePreviewFile, 'filePath' | 'diffs' | 'warnings' | 'noop'>;
@@ -45,6 +34,21 @@ function groupKey(group: PreviewGroup): string {
   return group.evidence === 'previewed' ? group.preview.previewId : group.detected.detectionId;
 }
 
+/**
+ * The session's write run in flight, as this gate may honestly show it while
+ * THIS modal's write executes (arch-v11 leaf 1.5). Additive: the section
+ * renders only while busy, and renders NOTHING when the arm cannot claim it —
+ * non-streamed arms carry no progress frames and no batch id, so no cancel
+ * affordance and no progress lines may appear for them.
+ */
+export interface WriteRunFlight {
+  progress: WriteProgress | null;
+  /** true only once the streamed batch id has landed — the cancel target exists. */
+  cancelOfferable: boolean;
+  cancelState: CancelRequestState | null;
+  onRequestCancel: () => void;
+}
+
 export interface SaveReviewModalProps {
   open: boolean;
   title: string;
@@ -54,6 +58,12 @@ export interface SaveReviewModalProps {
   destructiveNote?: string;
   /** true while the execute is running (progress lives outside the modal). */
   busy?: boolean;
+  /**
+   * The in-dialog flight section's data while this write runs — progress and
+   * a REACHABLE cancel (the view chrome behind the scrim is occluded). Every
+   * gate mechanic below is unchanged by it.
+   */
+  flight?: WriteRunFlight;
   /**
    * The server's refusal of the last confirm attempt, verbatim — rendered
    * INSIDE this dialog, because the scrim occludes every view-level banner.
@@ -94,6 +104,7 @@ export function SaveReviewModal({
   destructivePhrase = null,
   destructiveNote,
   busy = false,
+  flight,
   refusal = null,
   confirmLabel,
   cannotRemove,
@@ -167,6 +178,15 @@ export function SaveReviewModal({
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto px-5 py-3 text-sm">
+          {/* The in-dialog flight section (arch-v11 leaf 1.5): progress and a
+              REACHABLE cancel while this write streams — the view chrome
+              behind the scrim is occluded, so this is the surface a mouse
+              user can actually reach mid-run. Renders only while busy, and
+              nothing at all when the arm cannot honestly claim it. */}
+          {flight !== undefined && busy && (flight.progress !== null || flight.cancelOfferable || flight.cancelState !== null) && (
+            <FlightSection flight={flight} />
+          )}
+
           {/* The server's refusal of the last confirm, verbatim — inside the
               dialog, where the scrim cannot hide it (occlusion fix). */}
           {refusal !== null && (
@@ -313,6 +333,70 @@ export function SaveReviewModal({
           </Button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The in-dialog flight section: the streamed write's progress and the honest
+ * cancel, inside the dialog where they are reachable mid-run. The two-step
+ * confirm renders the SHARED cancel paragraph (one definition — the view's
+ * ConfirmDialog says exactly the same words) and unmounts with the section,
+ * so a finished flight never leaves a stale confirm open. No liveness claims,
+ * no chunk-streaming sentence, no per-file-cancel promise — the section says
+ * only what the wire honestly carries.
+ */
+function FlightSection({ flight }: { flight: WriteRunFlight }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  return (
+    <div
+      className="mb-3 rounded-md border border-accent/40 bg-accent-soft px-3 py-2 text-xs"
+      role="status"
+      aria-label="Write in progress"
+    >
+      {flight.progress !== null && (
+        <>
+          <div className="font-medium">Writing — phase {flight.progress.phase}</div>
+          <div className="mt-0.5 text-muted-foreground">
+            {flight.progress.index} of {flight.progress.total} files processed.
+          </div>
+        </>
+      )}
+      {flight.cancelOfferable && (
+        <div className="mt-2">
+          {confirmOpen ? (
+            <div className="rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2">
+              <p>{CANCEL_BATCH_CONFIRM_PARAGRAPH}</p>
+              <div className="mt-2 flex justify-end gap-2">
+                {/* The safe default keeps the write running (ConfirmDialog's
+                    idiom): it holds focus so Enter does not cancel a write. */}
+                <Button size="sm" variant="secondary" autoFocus onClick={() => setConfirmOpen(false)}>
+                  Keep writing
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  disabled={flight.cancelState?.status === 'requested'}
+                  onClick={flight.onRequestCancel}
+                >
+                  {flight.cancelState?.status === 'requested' ? 'Cancelling…' : 'Request cancel'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setConfirmOpen(true)}>
+              Cancel this batch
+            </Button>
+          )}
+        </div>
+      )}
+      {flight.cancelState !== null && (
+        <div className="mt-1 text-muted-foreground">
+          {flight.cancelState.status === 'requested'
+            ? flight.cancelState.note
+            : `Cancel was not accepted: ${flight.cancelState.note}`}
+        </div>
+      )}
     </div>
   );
 }

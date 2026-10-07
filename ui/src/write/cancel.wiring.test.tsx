@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { FolderScanResult } from '@metadesk/shared';
 import { BatchPanel } from '../views/BatchPanel';
 import { ResultsReport } from '../views/ResultsReport';
-import { useUiStore } from '../state/store';
+import { useUiStore, WRITE_RUN_IDLE } from '../state/store';
 import { mergeOutcomes } from './useWriteRun';
 import type { BatchOutcomeWithCancel, WriteOutcome } from './types';
 
@@ -64,6 +64,7 @@ beforeEach(() => {
     badges: {},
     nextCommand: null,
     commandHistory: [],
+    writeRun: { ...WRITE_RUN_IDLE },
   });
 });
 

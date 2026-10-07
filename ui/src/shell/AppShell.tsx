@@ -4,9 +4,11 @@ import { StatusStrip } from './StatusStrip';
 import { CommandPreviewDrawer } from './CommandPreviewDrawer';
 import { HelpOverlay } from './HelpOverlay';
 import { useUiStore } from '../state/store';
-import { navigate, useRoute, type Route } from '../lib/router';
+import { RUNNER_ROUTES, navigate, useRoute, type Route } from '../lib/router';
 import { pathBreadcrumb } from '../lib/format';
 import { Input } from '../components/ui/controls';
+import { Button } from '../components/ui/button';
+import { WriteRunModal, clearWriteCompletion } from '../write/useWriteRun';
 
 interface NavItem {
   route: Route;
@@ -147,8 +149,64 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
 
       <CommandPreviewDrawer />
+      <WriteRunLatch />
       <StatusStrip />
+      {/* The gate follows the user (arch-v11 leaf 1.5): on the four NON-runner
+          routes no view mounts the Save Review modal, so the shell hosts the
+          same WriteRunModal here. The host stays BEFORE HelpOverlay in the
+          tree on purpose — help is z-50 like the gate and renders after it, so
+          F1 mid-run still paints help OVER the gate (pre-existing stacking,
+          preserved; no new z-tiers). */}
+      <WriteRunModalHost />
       <HelpOverlay />
+    </div>
+  );
+}
+
+/**
+ * The shell's fallback mount for the ONE Save Review modal. The route
+ * predicate is the router's RUNNER_ROUTES — never a second hand-written list —
+ * so the partition is mutually exclusive by route: exactly zero-or-one gate
+ * dialog on every route (pinned by the session test).
+ */
+function WriteRunModalHost() {
+  const route = useRoute();
+  if ((RUNNER_ROUTES as readonly string[]).includes(route)) return null;
+  return <WriteRunModal />;
+}
+
+/**
+ * The honest completion latch (declared completion rule): when a write
+ * finishes while the user is AWAY from its origin route, the shell says so and
+ * offers the report — no yank. A failed run never claims success here. Hidden
+ * while a gate dialog is up (the busy modal is the top surface) and cleared by
+ * the View report click, or by any new review/run.
+ */
+function WriteRunLatch() {
+  const completion = useUiStore((s) => s.writeRun.completion);
+  const busy = useUiStore((s) => s.writeRun.busy);
+  const gateOpen = useUiStore((s) => s.writeRun.groups !== null);
+  if (completion === null || busy || gateOpen) return null;
+  return (
+    <div className="flex items-center gap-3 border-t border-border bg-card px-3 py-2 text-xs" role="status">
+      {completion === 'done' ? (
+        <>
+          <span>Write finished — the Results report is ready.</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto"
+            onClick={() => {
+              clearWriteCompletion();
+              navigate('/results');
+            }}
+          >
+            View report
+          </Button>
+        </>
+      ) : (
+        <span>The write ran into a problem — check History for what actually happened.</span>
+      )}
     </div>
   );
 }
