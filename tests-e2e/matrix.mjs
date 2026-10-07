@@ -78,7 +78,9 @@ const OVERALL_TIMEOUT_MS = 6 * 60 * 1000;
 // The wave-6 Evidence Collector accepted seven frames and flagged exactly these
 // three as cosmetic-framing retakes. Only these are re-rendered; the accepted
 // seven keep their committed bytes (see shot() below).
-const RETAKE_SET = new Set(['01-home.png', '09-console.png', '10-settings.png']);
+// arch-v11 leaf 1.4 adds 06-scrub-confirm: the wizard confirm step it depicted was
+// moved into the Save Review modal, so the committed bytes showed a removed surface.
+const RETAKE_SET = new Set(['01-home.png', '09-console.png', '10-settings.png', '06-scrub-confirm.png']);
 const RESHOOT_ALL = process.argv.includes('--reshoot-all');
 /** PACKAGED MODE: boot this extracted MetaDesk.exe instead of the dev launcher. */
 const PACKAGED_FLAG = process.argv.includes('--packaged');
@@ -512,8 +514,13 @@ async function run() {
   await expectVisible(page.getByText('PNG:Parameters').first(), 'planted A1111 parameters');
   await shot('05-scrub-findings.png');
 
+  // Leaf 1.4: the confirm step moved into the shared Save Review modal — the
+  // typed-phrase input is the modal's #destructive-phrase; the Remove button
+  // is the modal's confirm button (same label, same refusal force).
   await page.getByRole('button', { name: /Continue to confirm \(\d+\)/ }).click();
-  const phrase = page.locator('#scrub-phrase');
+  const reviewDialog = page.locator('[role="dialog"][aria-label^="AI-metadata scrub"]');
+  await expectVisible(reviewDialog, 'the scrub Save Review modal');
+  const phrase = page.locator('#destructive-phrase');
   await expectVisible(phrase, 'phrase input');
   const removeButton = page.getByRole('button', { name: /Remove AI metadata from 1 file/ });
   if (!(await removeButton.isDisabled())) fail('The scrub confirm button was enabled without the typed phrase');

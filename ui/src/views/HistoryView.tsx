@@ -59,11 +59,13 @@ export function HistoryView() {
         [
           {
             label: `Undo: restore ${preview.undoPreview.files.length} file(s) to their pre-edit values`,
+            evidence: 'previewed',
             preview: preview.undoPreview,
             commandPreview: preview.commandPreview,
           },
         ],
         {
+          kind: 'undo',
           title: `Undo review — what “${batch.description || 'this batch'}” changed goes back`,
           undoBatchId: batch.batchId,
         },

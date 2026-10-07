@@ -2,8 +2,9 @@
 /**
  * Write-surface safety tests (jsdom, no live server): the Save Review gate,
  * empty-means-unchanged, the amber unlocked mode, the three-valued results,
- * the scrub typed-phrase gate, and the streaming execute consumer. Every test
- * stubs fetch — nothing here touches a real engine.
+ * the destructive gates through the shared modal (GPS + scrub, typed phrase),
+ * the write-FIRING source contract, and the streaming execute consumer. Every
+ * test stubs fetch — nothing here touches a real engine.
  */
 import { describe, expect, it, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -14,13 +15,27 @@ import App from '../App';
 // runtime value is the module source text.
 // @ts-expect-error — TS2307: raw imports of relative paths are untyped
 import appSource from '../App.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import editPanelSource from '../views/EditPanel.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import scrubWizardSource from '../views/ScrubWizard.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import batchPanelSource from '../views/BatchPanel.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import resultsReportSource from '../views/ResultsReport.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import historyViewSource from '../views/HistoryView.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import useWriteRunSource from './useWriteRun.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import clientSource from '../api/client.ts?raw';
 import { SaveReviewModal, type PreviewGroup } from '../components/SaveReviewModal';
 import { EditPanel } from '../views/EditPanel';
 import { ResultsReport } from '../views/ResultsReport';
 import { ScrubWizard } from '../views/ScrubWizard';
 import { useUiStore } from '../state/store';
 import { executeWrite } from '../api/client';
-import type { WritePreview, WritePreviewFile } from './types';
+import type { DetectedPreview, WritePreview, WritePreviewFile } from './types';
 
 const appSourceText: string = appSource as string;
 
@@ -198,6 +213,58 @@ async function unmount(root: Root, container: HTMLDivElement): Promise<void> {
 
 const bodyText = (): string => document.body.textContent ?? '';
 
+// ---- fixtures for the detected (scan-projection) gate ---------------------------
+
+/** A DetectedPreview built the way the scrub wizard builds it. */
+function makeDetected(overrides: Partial<DetectedPreview> = {}): DetectedPreview {
+  return {
+    detectionId: 'sc_test',
+    files: [
+      {
+        filePath: 'C:\\photos\\a.png',
+        diffs: [{ tag: 'PNG:Parameters', before: 'steps:20, sampler:euler', kind: 'delete' }],
+        warnings: ['This PNG has an alpha channel.'],
+        noop: false,
+      },
+    ],
+    blockers: [],
+    ...overrides,
+  };
+}
+
+/** A previewed group carrying `count` files (for chunk-math assertions). */
+function makeMultiFilePreviewGroup(count: number): PreviewGroup {
+  return {
+    label: `${count} files`,
+    evidence: 'previewed',
+    preview: makePreview({
+      files: Array.from({ length: count }, (_, index) => ({
+        filePath: `C:\\photos\\f${index}.jpg`,
+        diffs: [],
+        argv: [],
+        warnings: [],
+        noop: true,
+      })),
+    }),
+    commandPreview: [],
+  };
+}
+
+function makeMultiFileDetectedGroup(count: number): PreviewGroup {
+  return {
+    label: `${count} files`,
+    evidence: 'detected',
+    detected: makeDetected({
+      files: Array.from({ length: count }, (_, index) => ({
+        filePath: `C:\\photos\\f${index}.png`,
+        diffs: [{ tag: 'PNG:Parameters', before: 'steps:20', kind: 'delete' as const }],
+        warnings: [],
+        noop: false,
+      })),
+    }),
+  };
+}
+
 // ---- SaveReviewModal -----------------------------------------------------------
 
 describe('SaveReviewModal', () => {
@@ -212,6 +279,7 @@ describe('SaveReviewModal', () => {
   it('renders per-tag old → new diffs, the backup statement, and the noop truth', () => {
     const group: PreviewGroup = {
       label: '2 files',
+      evidence: 'previewed',
       preview: makePreview(),
       commandPreview: ['-use', 'MWG', '-P'],
     };
@@ -242,6 +310,7 @@ describe('SaveReviewModal', () => {
   it('disables execute while blockers stand, and enables when they are gone', () => {
     const blocked: PreviewGroup = {
       label: 'blocked',
+      evidence: 'previewed',
       preview: makePreview({ blockers: ['The folder is not writable: C:\\photos'] }),
       commandPreview: [],
     };
@@ -468,14 +537,50 @@ describe('ResultsReport', () => {
   });
 });
 
-// ---- ScrubWizard: the typed-phrase gate ----------------------------------------------
+// ---- ScrubWizard: the typed-phrase gate lives in the shared modal ---------------
 
 describe('ScrubWizard', () => {
-  it('refuses to execute until REMOVE AI METADATA is typed exactly', async () => {
+  it('detect and findings stay honest, then the modal gate refuses until REMOVE AI METADATA is typed exactly', async () => {
     useUiStore.setState({ selectedPaths: ['C:\\photos\\a.png'] });
-    stubFetch((url) => {
+    const calls: Array<{ url: string; body: unknown; raw: string }> = [];
+    stubFetch((url, init) => {
       if (url.startsWith('/api/scrub/preview')) {
         return json({ report: SCRUB_REPORT, commandPreview: [], note: 'read-only scan' });
+      }
+      if (url.startsWith('/api/scrub/execute')) {
+        calls.push({ url, body: JSON.parse(String(init?.body)), raw: String(init?.body) });
+        return json({
+          outcome: {
+            batchId: 'wb_scrub',
+            startedAt: '2026-10-05T10:00:00Z',
+            finishedAt: '2026-10-05T10:00:05Z',
+            files: [
+              {
+                filePath: 'C:\\photos\\a.png',
+                status: 'updated',
+                warnings: [],
+                errors: [],
+                verified: true,
+              },
+            ],
+            updated: 1,
+            unchanged: 0,
+            failed: 0,
+            allVerified: true,
+            retryFilePaths: [],
+          },
+          commandPreview: [],
+          consistencyNotes: [],
+          report: SCRUB_REPORT,
+          exportedValuesPath: 'C:\\data\\journal\\exports\\sc_test.json',
+          notRemoved: [
+            {
+              filePath: 'C:\\photos\\a.png',
+              tag: 'PNG:prompt',
+              reason: 'A ComfyUI "prompt" chunk. The engine cannot delete this chunk by name.',
+            },
+          ],
+        });
       }
       if (url.startsWith('/api/health')) return json(HEALTH_READ_ONLY);
       if (url.startsWith('/api/events')) return new Response(null, { status: 503 });
@@ -484,7 +589,7 @@ describe('ScrubWizard', () => {
     const { root, container } = renderWithProviders(<ScrubWizard />);
     await flush();
 
-    // Step 1 → run detection.
+    // Step 1 → run detection (unchanged surface).
     const scan = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Scan for AI metadata'),
     );
@@ -494,13 +599,14 @@ describe('ScrubWizard', () => {
     });
     await flush();
 
-    // Step 2: findings honesty — removable, cannot-remove, hidden alpha.
+    // Step 2: findings honesty — removable, cannot-remove, hidden alpha (unchanged).
     const findings = bodyText();
     expect(findings).toContain('CANNOT be removed');
     expect(findings).toContain('PNG:Parameters');
     expect(findings).toContain('PNG:prompt');
     expect(findings).toContain('cannot scrub pixels');
 
+    // 'Continue to confirm (N)' keeps its copy and opens the SHARED gate.
     const next = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('Continue to confirm (1)'),
     );
@@ -509,15 +615,20 @@ describe('ScrubWizard', () => {
     });
     await flush();
 
-    // Step 3: the phrase gate.
-    expect(bodyText()).toContain('REMOVE AI METADATA');
-    const execute = () =>
-      Array.from(document.querySelectorAll('button')).find((button) =>
-        button.textContent?.includes('Remove AI metadata from 1 file'),
-      ) as HTMLButtonElement | undefined;
-    expect(execute()?.disabled).toBe(true);
+    // The gate is the Save Review modal now: detection-grade header (the wipe
+    // re-detects, so no exact-change claim), no argv, no chunk note.
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement | null;
+    expect(dialog).not.toBeNull();
+    const dialogText = dialog?.textContent ?? '';
+    expect(dialogText).toContain('REMOVE AI METADATA');
+    expect(dialogText).not.toContain('exact change MetaDesk will make');
+    expect(dialogText).toContain('re-scans every file');
+    expect(dialogText).not.toContain('Exact command');
+    expect(dialogText).not.toContain('progress streams per chunk');
+    // The wizard's own confirm step is gone.
+    expect(document.querySelector('#scrub-phrase')).toBeNull();
 
-    const phraseInput = document.querySelector('#scrub-phrase') as HTMLInputElement | null;
+    const phraseInput = document.querySelector('#destructive-phrase') as HTMLInputElement | null;
     expect(phraseInput).not.toBeNull();
     const setPhrase = (value: string): void => {
       if (phraseInput === null) return;
@@ -528,6 +639,11 @@ describe('ScrubWizard', () => {
         phraseInput.dispatchEvent(new Event('input', { bubbles: true }));
       });
     };
+    const execute = () =>
+      Array.from(document.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes('Remove AI metadata from 1 file'),
+      ) as HTMLButtonElement | undefined;
+    expect(execute()?.disabled).toBe(true);
 
     setPhrase('remove ai metadata'); // wrong case — refused
     expect(execute()?.disabled).toBe(true);
@@ -535,7 +651,398 @@ describe('ScrubWizard', () => {
     expect(execute()?.disabled).toBe(true);
     setPhrase('REMOVE AI METADATA'); // exact — enabled
     expect(execute()?.disabled).toBe(false);
+
+    await act(async () => {
+      execute()?.click();
+    });
+    await flush();
+
+    // The scrub execute body is EXACTLY {files, confirm} — the TYPED phrase,
+    // never the synthetic scrubId.
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.body).toEqual({
+      files: ['C:\\photos\\a.png'],
+      confirm: 'REMOVE AI METADATA',
+    });
+    expect(calls[0]?.raw).not.toContain('sc_test');
+    // lastWrite carries the scrub label + recordEdits + the execute's extras.
+    const lastWrite = useUiStore.getState().lastWrite;
+    expect(lastWrite?.label).toBe('AI-metadata scrub — 1 file(s)');
+    expect(lastWrite?.edits).toEqual([{ tag: 'PNG:Parameters', op: 'delete' }]);
+    expect(lastWrite?.scrub?.exportedValuesPath).toBe('C:\\data\\journal\\exports\\sc_test.json');
+    // onRecorded ran: the file still carries the unremovable PNG:prompt chunk
+    // (it is in notRemoved), so its AI badge honestly STAYS flagged.
+    expect(useUiStore.getState().badges['C:\\photos\\a.png']?.aiGenerated).toBe(true);
+    // The runner navigated to Results.
+    expect(window.location.hash).toBe('#/results');
     void unmount(root, container);
+  });
+});
+
+// ---- GPS strip through the runner: non-streamed, server-minted phrase -----------
+
+describe('GPS strip through the Save Review modal', () => {
+  const GPS_PREVIEW = {
+    preview: makePreview({
+      previewId: 'pv_gps',
+      planId: 'pl_gps',
+      files: [
+        {
+          filePath: 'C:\\photos\\a.jpg',
+          diffs: [{ tag: 'GPS:GPSLatitude', before: '37 deg 48\' N', kind: 'delete' }],
+          argv: ['-GPS:all=', 'C:\\photos\\a.jpg'],
+          warnings: [],
+          noop: false,
+        },
+      ],
+    }),
+    commandPreview: ['-GPS:all=', 'C:\\photos\\a.jpg'],
+    diffNotes: [],
+    writeUnlocked: true,
+    destructive: {
+      scope: 'gps',
+      requiresTypedConfirmation: true,
+      // NOT the dead client constant — proves the gate binds the server phrase.
+      confirmationPhrase: 'ERASE LOCATION NOW',
+    },
+    gpsStripId: 'gs_test',
+    exportedValuesPath: 'C:\\data\\journal\\exports\\gs_test.json',
+    notRemoved: [{ filePath: 'C:\\photos\\a.jpg', tag: 'GPS:GPSMapDatum', reason: 'Cannot delete by name.' }],
+  };
+
+  function stubGpsFlow(executeResponse: () => Response): {
+    calls: Array<{ url: string; body: unknown; raw: string }>;
+  } {
+    const calls: Array<{ url: string; body: unknown; raw: string }> = [];
+    stubFetch((url, init) => {
+      if (url.startsWith('/api/file/metadata')) return json(METADATA);
+      if (url.startsWith('/api/write/preview')) {
+        return json(GPS_PREVIEW);
+      }
+      if (url.startsWith('/api/write/execute')) {
+        calls.push({ url, body: JSON.parse(String(init?.body)), raw: String(init?.body) });
+        return executeResponse();
+      }
+      return json({ code: 'not_found', message: 'unexpected' }, 404);
+    });
+    return { calls };
+  }
+
+  async function openGate(): Promise<void> {
+    const button = Array.from(document.querySelectorAll('button')).find((element) =>
+      element.textContent?.includes('Remove GPS from selection…'),
+    );
+    expect(button).toBeDefined();
+    await act(async () => {
+      button?.click();
+    });
+    await flush();
+    // The title doubles as the lastWrite label — HEAD's exact pluralization.
+    const dialog = document.querySelector('[role="dialog"][aria-label^="Remove GPS — 1 file"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.getAttribute('aria-label')).toBe('Remove GPS — 1 file');
+  }
+
+  function typePhrase(value: string): void {
+    const phraseInput = document.querySelector('#destructive-phrase') as HTMLInputElement | null;
+    if (phraseInput === null) return;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    act(() => {
+      setter?.call(phraseInput, value);
+      phraseInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  function confirmButton(): HTMLButtonElement | undefined {
+    return Array.from(document.querySelectorAll('button')).find((element) =>
+      element.textContent?.includes('Strip GPS data now'),
+    ) as HTMLButtonElement | undefined;
+  }
+
+  it('sends {previewId, destructive} with the TYPED phrase and NEVER streams', async () => {
+    useUiStore.setState({ selectedPaths: ['C:\\photos\\a.jpg'] });
+    const { calls } = stubGpsFlow(() =>
+      json({
+        outcome: {
+          batchId: 'wb_gps',
+          startedAt: '2026-10-05T10:00:00Z',
+          finishedAt: '2026-10-05T10:00:02Z',
+          files: [
+            { filePath: 'C:\\photos\\a.jpg', status: 'updated', warnings: [], errors: [], verified: true },
+          ],
+          updated: 1,
+          unchanged: 0,
+          failed: 0,
+          allVerified: true,
+          retryFilePaths: [],
+        },
+        commandPreview: ['-GPS:all=', 'C:\\photos\\a.jpg'],
+        consistencyNotes: ['Engine cross-check note: none.'],
+        writeUnlocked: true,
+      }),
+    );
+    const { root, container } = renderWithProviders(<EditPanel />);
+    await flush();
+    await openGate();
+
+    // The gate shows the SERVER-MINTED phrase, the not-removed honesty rows,
+    // and the backup statement — the richer gate.
+    const dialogText = document.querySelector('[role="dialog"]')?.textContent ?? '';
+    expect(dialogText).toContain('ERASE LOCATION NOW');
+    expect(dialogText).not.toContain('REMOVE GPS DATA');
+    expect(dialogText).toContain('GPS:GPSMapDatum');
+    expect(dialogText).toContain('Backup first:');
+    expect(confirmButton()?.disabled).toBe(true);
+
+    typePhrase('erase location now'); // wrong case — refused
+    expect(confirmButton()?.disabled).toBe(true);
+    typePhrase('REMOVE GPS DATA'); // the dead client constant — refused
+    expect(confirmButton()?.disabled).toBe(true);
+    typePhrase('ERASE LOCATION NOW'); // exact — enabled
+    expect(confirmButton()?.disabled).toBe(false);
+    await act(async () => {
+      confirmButton()?.click();
+    });
+    await flush();
+
+    // Wire pin: {previewId, destructive:{confirmationPhrase}} — typed phrase,
+    // NO "stream":true (the consistencyNotes channel must survive).
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.body).toEqual({
+      previewId: 'pv_gps',
+      destructive: { confirmationPhrase: 'ERASE LOCATION NOW' },
+    });
+    expect(calls[0]?.raw).not.toContain('"stream"');
+    // lastWrite: HEAD parity — label, empty edits (inert Retry quirk kept),
+    // consistencyNotes from the plain response, extras from the PREVIEW.
+    const lastWrite = useUiStore.getState().lastWrite;
+    expect(lastWrite?.label).toBe('Remove GPS — 1 file');
+    expect(lastWrite?.edits).toEqual([]);
+    expect(lastWrite?.consistencyNotes).toEqual(['Engine cross-check note: none.']);
+    expect(lastWrite?.scrub).toEqual({
+      exportedValuesPath: 'C:\\data\\journal\\exports\\gs_test.json',
+      notRemoved: GPS_PREVIEW.notRemoved,
+    });
+    void unmount(root, container);
+  });
+
+  it('renders a 403 refusal INSIDE the still-open dialog and a retry re-POSTs the same preview', async () => {
+    useUiStore.setState({ selectedPaths: ['C:\\photos\\a.jpg'] });
+    const { calls } = stubGpsFlow(() =>
+      json(
+        {
+          code: 'unsafe_tag',
+          message: 'The confirmation phrase did not match. Nothing was written.',
+        },
+        403,
+      ),
+    );
+    const { root, container } = renderWithProviders(<EditPanel />);
+    await flush();
+    await openGate();
+
+    typePhrase('ERASE LOCATION NOW');
+    await act(async () => {
+      confirmButton()?.click();
+    });
+    await flush();
+
+    // jsdom cannot see occlusion — assert the refusal lives INSIDE the
+    // role=dialog subtree, with the groups still intact (retype-and-retry).
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain('This was refused — nothing was changed.');
+    expect(dialog?.textContent).toContain('The confirmation phrase did not match. Nothing was written.');
+    expect(dialog?.textContent).toContain('GPS tags to delete');
+
+    // Retype-and-retry re-POSTs the SAME previewId.
+    typePhrase('ERASE LOCATION NOW');
+    await act(async () => {
+      confirmButton()?.click();
+    });
+    await flush();
+    expect(calls.length).toBe(2);
+    expect(calls[1]?.body).toEqual({
+      previewId: 'pv_gps',
+      destructive: { confirmationPhrase: 'ERASE LOCATION NOW' },
+    });
+    void unmount(root, container);
+  });
+});
+
+// ---- gate fidelity: chunk-note + header + argv BY MECHANISM ----------------------
+
+describe('SaveReviewModal gate fidelity', () => {
+  it('shows the streaming chunk note only when streamed is set (and never on a detected gate)', async () => {
+    const streamed = renderWithProviders(
+      <SaveReviewModal
+        {...{
+          open: true,
+          title: 'Batch review',
+          groups: [makeMultiFilePreviewGroup(201)],
+          streamed: true,
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />,
+    );
+    expect(bodyText()).toContain('progress streams per chunk');
+    await unmount(streamed.root, streamed.container);
+
+    const unstreamed = renderWithProviders(
+      <SaveReviewModal
+        {...{
+          open: true,
+          title: 'Batch review',
+          groups: [makeMultiFilePreviewGroup(201)],
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />,
+    );
+    expect(bodyText()).not.toContain('progress streams per chunk');
+    await unmount(unstreamed.root, unstreamed.container);
+
+    // A detected gate never claims streaming — even at two chunks.
+    const detected = renderWithProviders(
+      <SaveReviewModal
+        {...{
+          open: true,
+          title: 'AI-metadata scrub — 201 file(s)',
+          groups: [makeMultiFileDetectedGroup(201)],
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />,
+    );
+    const text = bodyText();
+    expect(text).toContain('re-scans every file');
+    expect(text).not.toContain('progress streams per chunk');
+    expect(text).not.toContain('exact change MetaDesk will make');
+    await unmount(detected.root, detected.container);
+  });
+
+  it('suppresses the argv blocks on detected groups and keeps them on previewed ones', async () => {
+    const previewed = renderWithProviders(
+      <SaveReviewModal
+        {...{
+          open: true,
+          title: 'Save review',
+          groups: [
+            {
+              label: '2 files',
+              evidence: 'previewed',
+              preview: makePreview(),
+              commandPreview: ['-use', 'MWG', '-P'],
+            },
+          ],
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />,
+    );
+    const previewedText = bodyText();
+    expect(previewedText).toContain('Command preview');
+    expect(previewedText).toContain('exact change MetaDesk will make');
+    // The per-file argv block lives behind the disclosure — expand it.
+    const expand = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('a.jpg'),
+    );
+    act(() => {
+      expand?.click();
+    });
+    expect(bodyText()).toContain('Exact command');
+    await unmount(previewed.root, previewed.container);
+
+    const detectedGroup: PreviewGroup = {
+      label: 'AI metadata to remove',
+      evidence: 'detected',
+      detected: makeDetected(),
+    };
+    const detected = renderWithProviders(
+      <SaveReviewModal
+        {...{
+          open: true,
+          title: 'AI-metadata scrub — 1 file(s)',
+          groups: [detectedGroup],
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        }}
+      />,
+    );
+    // Expand the one file row so the per-file section would render if allowed.
+    const toggle = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('a.png'),
+    );
+    act(() => {
+      toggle?.click();
+    });
+    const detectedText = bodyText();
+    expect(detectedText).toContain('PNG:Parameters');
+    expect(detectedText).toContain('steps:20, sampler:euler');
+    expect(detectedText).not.toContain('Exact command');
+    expect(detectedText).not.toContain('Command preview');
+    await unmount(detected.root, detected.container);
+  });
+
+  it('renders the bounded cannot-remove rows at the consent moment', () => {
+    const rows = Array.from({ length: 10 }, (_, index) => ({
+      filePath: `C:\\photos\\f${index}.png`,
+      tag: 'PNG:prompt',
+      reason: 'A ComfyUI "prompt" chunk.',
+    }));
+    const group: PreviewGroup = {
+      label: 'AI metadata to remove',
+      evidence: 'detected',
+      detected: makeDetected(),
+    };
+    const { root, container } = renderWithProviders(
+      <SaveReviewModal
+        {...{ open: true, title: 'AI-metadata scrub — 1 file(s)', groups: [group], cannotRemove: rows, onConfirm: () => undefined, onCancel: () => undefined }}
+      />,
+    );
+    const text = bodyText();
+    expect(text).toContain('10 detected items can NOT be removed');
+    expect(text).toContain('f0.png');
+    expect(text).toContain('… and 2 more — full list in Results.');
+    void unmount(root, container);
+  });
+});
+
+// ---- the source contract: the runner is the only place a write fires -------------
+
+describe('write-firing source contract', () => {
+  const viewSources: Array<[string, string]> = [
+    ['EditPanel.tsx', editPanelSource as string],
+    ['ScrubWizard.tsx', scrubWizardSource as string],
+    ['BatchPanel.tsx', batchPanelSource as string],
+    ['ResultsReport.tsx', resultsReportSource as string],
+    ['HistoryView.tsx', historyViewSource as string],
+  ];
+  const FIRING_CALLS = ['executeWrite', 'scrubExecute', 'confirmUndo'];
+
+  it('no view file fires a write or fetches a write endpoint', () => {
+    for (const [name, source] of viewSources) {
+      for (const call of FIRING_CALLS) {
+        expect(source, `${name} must not contain ${call}`).not.toContain(call);
+      }
+      expect(source, `${name} must not fetch a write endpoint`).not.toMatch(
+        /fetch\(\s*[`'"]\/api\/(write|scrub\/execute)/,
+      );
+    }
+  });
+
+  it('useWriteRun.tsx contains every write-firing call, and the dead GPS execute is gone everywhere', () => {
+    const runnerSource = useWriteRunSource as string;
+    for (const call of FIRING_CALLS) {
+      expect(runnerSource, `the runner must own ${call}`).toContain(call);
+    }
+    // executeGpsStrip died as an orphan — nowhere, including client.ts.
+    const clientSourceText = clientSource as string;
+    expect(clientSourceText).not.toContain('executeGpsStrip');
+    for (const [, source] of viewSources) {
+      expect(source).not.toContain('executeGpsStrip');
+    }
   });
 });
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { TagDiff, WritePreview, WritePreviewFile } from '../write/types';
+import type { DetectedPreview, TagDiff, WritePreview, WritePreviewFile } from '../write/types';
 import { chunkEstimate } from '../write/fields';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -8,11 +8,41 @@ import { CommandPreviewChips } from './CommandPreviewChips';
 import { basename } from '../lib/format';
 import { copyText } from '../lib/clipboard';
 
-/** One preview the modal gates: usually the batch; sometimes a date-shift group. */
-export interface PreviewGroup {
-  label: string;
-  preview: WritePreview;
-  commandPreview: string[];
+/**
+ * One preview the modal gates, and the fidelity it can honestly claim:
+ * 'previewed' groups carry the server's exact per-file diff and argv (the
+ * ordinary write channel); 'detected' groups carry a scan projection — the
+ * destructive wipe re-detects from a fresh scan before it runs, so no exact
+ * command exists and the exact-change claims are suppressed BY MECHANISM.
+ */
+export type PreviewGroup =
+  | {
+      label: string;
+      /** The server previewed the exact change — argv + command preview are true. */
+      evidence: 'previewed';
+      preview: WritePreview;
+      commandPreview: string[];
+    }
+  | {
+      label: string;
+      /** Detection-grade fidelity: rows are what the scan found, values as-scanned. */
+      evidence: 'detected';
+      detected: DetectedPreview;
+    };
+
+/** The file shape both group kinds share (argv exists only on 'previewed'). */
+type GateFile = Pick<WritePreviewFile, 'filePath' | 'diffs' | 'warnings' | 'noop'>;
+
+function groupFiles(group: PreviewGroup): GateFile[] {
+  return group.evidence === 'previewed' ? group.preview.files : group.detected.files;
+}
+
+function groupBlockers(group: PreviewGroup): string[] {
+  return group.evidence === 'previewed' ? group.preview.blockers : group.detected.blockers;
+}
+
+function groupKey(group: PreviewGroup): string {
+  return group.evidence === 'previewed' ? group.preview.previewId : group.detected.detectionId;
 }
 
 export interface SaveReviewModalProps {
@@ -24,7 +54,25 @@ export interface SaveReviewModalProps {
   destructiveNote?: string;
   /** true while the execute is running (progress lives outside the modal). */
   busy?: boolean;
-  onConfirm: () => void;
+  /**
+   * The server's refusal of the last confirm attempt, verbatim — rendered
+   * INSIDE this dialog, because the scrim occludes every view-level banner.
+   * The modal stays open with its groups intact so a retype-and-retry can
+   * re-POST the same preview.
+   */
+  refusal?: string | null;
+  /** Overrides the computed confirm-button label (destructive flows keep their copy). */
+  confirmLabel?: string;
+  /** Detected items that will NOT be removed — stated at the consent moment. */
+  cannotRemove?: Array<{ filePath: string; tag: string; reason: string }>;
+  /**
+   * true only when the execute actually streams chunk progress — the
+   * "progress streams per chunk" sentence is a lie otherwise, so the chunk
+   * note renders ONLY when this is set.
+   */
+  streamed?: boolean;
+  /** Carries the TYPED phrase — the payload, never a client-held constant. */
+  onConfirm: (phrase: string) => void;
   onCancel: () => void;
 }
 
@@ -34,9 +82,10 @@ const BACKUP_STATEMENT =
 /**
  * THE mandatory gate before any write (ux-spec Save Review Modal): the old →
  * new table per tag per file, blockers rendered distinctly (they disable the
- * execute button), the exact exiftool arguments, the backup statement, the
- * honest "no change needed" list, and — only for destructive flows — the typed
- * confirmation phrase. Cancel is the default button; nothing here can write.
+ * execute button), the exact exiftool arguments (exact-change groups only),
+ * the backup statement, the honest "no change needed" list, and — only for
+ * destructive flows — the typed confirmation phrase. Cancel is the default
+ * button; nothing here can write.
  */
 export function SaveReviewModal({
   open,
@@ -45,6 +94,10 @@ export function SaveReviewModal({
   destructivePhrase = null,
   destructiveNote,
   busy = false,
+  refusal = null,
+  confirmLabel,
+  cannotRemove,
+  streamed = false,
   onConfirm,
   onCancel,
 }: SaveReviewModalProps) {
@@ -54,7 +107,7 @@ export function SaveReviewModal({
   const [copied, setCopied] = useState(false);
 
   const visibleGroups = useMemo(
-    () => groups.filter((g) => g.preview.files.length > 0),
+    () => groups.filter((g) => groupFiles(g).length > 0),
     [groups],
   );
 
@@ -65,19 +118,19 @@ export function SaveReviewModal({
     let blockers: string[] = [];
     let files = 0;
     for (const group of visibleGroups) {
-      for (const file of group.preview.files) {
+      for (const file of groupFiles(group)) {
         files += 1;
         if (file.noop || file.diffs.every((d) => d.kind === 'unchanged')) noop += 1;
         else changing += 1;
         warnings += file.warnings.length;
       }
-      blockers = blockers.concat(group.preview.blockers);
+      blockers = blockers.concat(groupBlockers(group));
     }
     return { changing, noop, warnings, blockers: [...new Set(blockers)], files };
   }, [visibleGroups]);
 
   const chunks = useMemo(
-    () => visibleGroups.reduce((sum, g) => sum + chunkEstimate(g.preview.files.length), 0),
+    () => visibleGroups.reduce((sum, g) => sum + chunkEstimate(groupFiles(g).length), 0),
     [visibleGroups],
   );
 
@@ -86,10 +139,12 @@ export function SaveReviewModal({
 
   if (!open) return null;
 
-  const confirmLabel =
+  const computedLabel =
     destructivePhrase !== null
       ? `Remove metadata from ${counts.changing} file${counts.changing === 1 ? '' : 's'}`
       : `Write ${counts.changing} file${counts.changing === 1 ? '' : 's'}`;
+  const confirmLabel_ = confirmLabel ?? computedLabel;
+  const detected = visibleGroups.some((group) => group.evidence === 'detected');
 
   return (
     <div
@@ -105,12 +160,24 @@ export function SaveReviewModal({
         <header className="border-b border-border px-5 py-3">
           <h2 className="text-base font-semibold">{title}</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Nothing has been written yet. This is the exact change MetaDesk will make — read it,
-            then decide.
+            {detected
+              ? 'Nothing has been written yet. These are the items the scan detected — the removal re-scans every file just before it runs, so it may remove more than listed here. Read it, then decide.'
+              : 'Nothing has been written yet. This is the exact change MetaDesk will make — read it, then decide.'}
           </p>
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto px-5 py-3 text-sm">
+          {/* The server's refusal of the last confirm, verbatim — inside the
+              dialog, where the scrim cannot hide it (occlusion fix). */}
+          {refusal !== null && (
+            <div className="mb-3 rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2" role="alert">
+              <div className="text-xs font-semibold text-destructive">
+                This was refused — nothing was changed.
+              </div>
+              <p className="mt-1 break-words font-mono text-xs">{refusal}</p>
+            </div>
+          )}
+
           {/* Blockers: they disable the execute button, rendered distinctly */}
           {counts.blockers.length > 0 && (
             <div className="mb-3 rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2">
@@ -158,10 +225,8 @@ export function SaveReviewModal({
 
           {visibleGroups.map((group) => (
             <GroupSection
-              key={`${group.label}:${group.preview.previewId}`}
-              label={group.label}
-              preview={group.preview}
-              commandPreview={group.commandPreview}
+              key={`${group.label}:${groupKey(group)}`}
+              group={group}
               filter={filter}
               expanded={expanded}
               setExpanded={setExpanded}
@@ -175,11 +240,35 @@ export function SaveReviewModal({
             <span className="font-semibold text-success">Backup first: </span>
             {BACKUP_STATEMENT}
           </div>
-          {chunks > 1 && (
+          {streamed && chunks > 1 && (
             <p className="mt-2 text-xs text-muted-foreground">
               This batch runs in {chunks} chunks of up to 200 files; progress streams per chunk and
               a failed file never stops the others.
             </p>
+          )}
+
+          {/* Detected items that will NOT be removed — honest at the consent
+              moment (bounded; the full list lands on Results / the findings). */}
+          {cannotRemove !== undefined && cannotRemove.length > 0 && (
+            <div className="mt-4 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs">
+              <span className="font-semibold text-warning">
+                {cannotRemove.length} detected item{cannotRemove.length === 1 ? '' : 's'} can NOT be
+                removed by this version — they will still be in the files:
+              </span>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {cannotRemove.slice(0, 8).map((row) => (
+                  <li key={`${row.filePath}:${row.tag}`} className="break-words">
+                    <span className="font-mono">{basename(row.filePath)}</span> —{' '}
+                    <span className="font-mono font-semibold">{row.tag}</span>: {row.reason}
+                  </li>
+                ))}
+              </ul>
+              {cannotRemove.length > 8 && (
+                <p className="mt-1 text-muted-foreground">
+                  … and {cannotRemove.length - 8} more — full list in Results.
+                </p>
+              )}
+            </div>
           )}
 
           {destructivePhrase !== null && (
@@ -210,7 +299,7 @@ export function SaveReviewModal({
           </Button>
           <Button
             variant={destructivePhrase !== null ? 'danger' : 'primary'}
-            onClick={onConfirm}
+            onClick={() => onConfirm(phrase)}
             disabled={!canExecute}
             title={
               counts.blockers.length > 0
@@ -220,7 +309,7 @@ export function SaveReviewModal({
                   : undefined
             }
           >
-            {busy ? 'Working…' : confirmLabel}
+            {busy ? 'Working…' : confirmLabel_}
           </Button>
         </footer>
       </div>
@@ -229,25 +318,30 @@ export function SaveReviewModal({
 }
 
 function GroupSection({
-  label,
-  preview,
-  commandPreview,
+  group,
   filter,
   expanded,
   setExpanded,
   copied,
   setCopied,
 }: {
-  label: string;
-  preview: WritePreview;
-  commandPreview: string[];
+  group: PreviewGroup;
   filter: 'all' | 'changing' | 'noop';
   expanded: Record<string, boolean>;
   setExpanded: (next: Record<string, boolean>) => void;
   copied: boolean;
   setCopied: (v: boolean) => void;
 }) {
-  const files = preview.files.filter((file) => {
+  const allFiles = groupFiles(group);
+  const commandPreview = group.evidence === 'previewed' ? group.commandPreview : [];
+  // Per-file argv exists ONLY on previewed groups — the suppression mechanism
+  // for the "Exact command" blocks (a detected scan has nothing to show).
+  const perFileArgv = new Map(
+    group.evidence === 'previewed'
+      ? group.preview.files.map((file) => [file.filePath, file.argv] as const)
+      : [],
+  );
+  const files = allFiles.filter((file) => {
     const noop = file.noop || file.diffs.every((d) => d.kind === 'unchanged');
     return filter === 'all' || (filter === 'noop' ? noop : !noop);
   });
@@ -255,8 +349,8 @@ function GroupSection({
   return (
     <section className="mb-4">
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold">{label}</h3>
-        <span className="text-xs text-muted-foreground">{preview.files.length} file(s)</span>
+        <h3 className="text-sm font-semibold">{group.label}</h3>
+        <span className="text-xs text-muted-foreground">{allFiles.length} file(s)</span>
       </div>
 
       {files.length === 0 ? (
@@ -266,7 +360,7 @@ function GroupSection({
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border">
           {files.map((file) => {
-            const key = `${preview.previewId}:${file.filePath}`;
+            const key = `${groupKey(group)}:${file.filePath}`;
             const isOpen = expanded[key] === true;
             const noop = file.noop || file.diffs.every((d) => d.kind === 'unchanged');
             return (
@@ -322,12 +416,16 @@ function GroupSection({
                       </ul>
                     )}
 
-                    <div className="mt-2">
-                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        Exact command for this file
+                    {/* Exact argv only when the server truly previewed the
+                        change — a detected scan has no command to show. */}
+                    {perFileArgv.has(file.filePath) && (
+                      <div className="mt-2">
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Exact command for this file
+                        </div>
+                        <CommandPreviewChips argv={perFileArgv.get(file.filePath) ?? []} />
                       </div>
-                      <CommandPreviewChips argv={file.argv} />
-                    </div>
+                    )}
                   </div>
                 )}
               </li>
@@ -336,7 +434,7 @@ function GroupSection({
         </ul>
       )}
 
-      {commandPreview.length > 0 && (
+      {group.evidence === 'previewed' && commandPreview.length > 0 && (
         <div className="mt-2">
           <div className="mb-1 flex items-center gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">

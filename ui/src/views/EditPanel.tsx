@@ -1,30 +1,25 @@
 import { useMemo, useState } from 'react';
 import type { MetadataPayload } from '@metadesk/shared';
-import { executeGpsStrip, previewGpsStrip, previewWrite } from '../api/client';
+import { previewGpsStrip, previewWrite } from '../api/client';
 import { useMetadata } from '../state/queries';
 import { useUiStore } from '../state/store';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
-import { Input } from '../components/ui/controls';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
-import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EditFields, type CurrentValues } from '../write/EditFields';
 import { buildTagEdits, emptyStagedEdits, type StagedEdits } from '../write/fields';
-import { useWriteRunner } from '../write/useWriteRun';
-import type { GpsStripPreviewResponse } from '../write/types';
+import { useWriteRunner, type WriteRunner } from '../write/useWriteRun';
 import { basename } from '../lib/format';
 import { navigate } from '../lib/router';
-
-/** The typed phrase for the GPS strip (BUILD-NOTES: same pattern as the scrub). */
-const GPS_CONFIRM_PHRASE = 'REMOVE GPS DATA';
 
 /**
  * Edit Panel (ux-spec, route /edit): the curated editable field set operating
  * on the grid selection. Empty means unchanged everywhere; clearing a field is
  * a separate red action with its own confirm; Save always routes through the
  * Save Review modal. The GPS strip lives here as its own destructive,
- * phrase-gated action with a per-file tag inventory.
+ * phrase-gated action — gated through the same Save Review modal (the phrase
+ * is the SERVER-MINTED one; only the typed phrase is ever sent).
  */
 export function EditPanel() {
   const selectedPaths = useUiStore((s) => s.selectedPaths);
@@ -108,11 +103,13 @@ function EditSelection({
               selectedPaths.length === 1
                 ? basename(selectedPaths[0] ?? '')
                 : `${selectedPaths.length} files`,
+            evidence: 'previewed',
             preview: envelope.preview,
             commandPreview: envelope.commandPreview,
           },
         ],
         {
+          kind: 'edits',
           title: 'Save review — check every change before you allow it',
           edits,
           ...(staged.timezone !== 'none' ? { timezone: staged.timezone } : {}),
@@ -177,92 +174,65 @@ function EditSelection({
         </div>
       )}
 
-      <GpsStrip selectedPaths={selectedPaths} />
+      <GpsStrip selectedPaths={selectedPaths} runner={runner} />
       {runner.modal}
     </div>
   );
 }
 
-// ---- GPS strip (destructive, phrase-gated) -----------------------------------
+// ---- GPS strip (destructive, phrase-gated through the Save Review modal) -----
 
 /**
  * The GPS strip: the server's destructive channel on the generic write routes.
  * The preview is the authoritative read: it lists EVERY GPS tag to be deleted
  * per file with its current value, the sidecar export is written before
  * anything can run, and the execute is gated on the typed phrase server-side.
- * The server's verdict is surfaced verbatim — including the honest list of
- * GPS-family tags it cannot remove.
+ * This component only fetches that preview and hands it to the runner — the
+ * gate, the typed phrase, the refusal surface and the execute all live in the
+ * Save Review modal / useWriteRun. The phrase displayed is the SERVER-MINTED
+ * one (preview.destructive.confirmationPhrase); no client constant exists.
  */
-function GpsStrip({ selectedPaths }: { selectedPaths: string[] }) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [phrase, setPhrase] = useState('');
-  const [stripPreview, setStripPreview] = useState<GpsStripPreviewResponse | null>(null);
+function GpsStrip({ selectedPaths, runner }: { selectedPaths: string[]; runner: WriteRunner }) {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | null>(null);
-
-  // Per-file delete rows straight from the server preview's diffs.
-  const rows = useMemo<Array<{ filePath: string; tags: string[] }>>(() => {
-    if (stripPreview === null) return [];
-    return stripPreview.preview.files
-      .map((file) => ({
-        filePath: file.filePath,
-        tags: file.diffs
-          .filter((diff) => diff.kind === 'delete' && diff.before !== undefined)
-          .map((diff) => `${diff.tag} = ${diff.before ?? ''}`),
-      }))
-      .filter((row) => row.tags.length > 0);
-  }, [stripPreview]);
-  const affectedFiles = rows;
 
   const openDialog = async (): Promise<void> => {
-    setRefusal(null);
-    setPhrase('');
     setPreviewError(null);
     setPreviewBusy(true);
     try {
       const preview = await previewGpsStrip(selectedPaths);
-      setStripPreview(preview);
-      setDialogOpen(true);
+      // Land on the standard Results report after success: three-valued
+      // per-file truth, the sidecar export path (from THIS preview, HEAD
+      // parity), and the honest not-removed list. `edits` stay empty so Retry
+      // is disabled (a strip retry must re-preview through the GPS channel,
+      // not the plain edit channel) — the inert-Retry quirk, kept as-is.
+      runner.review(
+        [
+          {
+            label: 'GPS tags to delete',
+            evidence: 'previewed',
+            preview: preview.preview,
+            commandPreview: preview.commandPreview,
+          },
+        ],
+        {
+          kind: 'preview',
+          title: `Remove GPS — ${selectedPaths.length} file${selectedPaths.length === 1 ? '' : 's'}`,
+          destructive: { confirmationPhrase: preview.destructive.confirmationPhrase },
+          destructiveNote:
+            'This is a privacy strip, not an edit: every GPS tag is deleted from each file. The current values are exported to a journal sidecar first, so the coordinates survive even if the backups are later deleted.',
+          confirmLabel: 'Strip GPS data now',
+          cannotRemove: preview.notRemoved,
+          scrubExtras: {
+            exportedValuesPath: preview.exportedValuesPath,
+            notRemoved: preview.notRemoved,
+          },
+        },
+      );
     } catch (cause) {
       setPreviewError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setPreviewBusy(false);
-    }
-  };
-
-  const attemptStrip = async (): Promise<void> => {
-    if (phrase !== GPS_CONFIRM_PHRASE || busy || stripPreview === null) return;
-    setBusy(true);
-    try {
-      const result = await executeGpsStrip(stripPreview.preview.previewId, phrase);
-      setDialogOpen(false);
-      setRefusal(null);
-      // Land on the standard Results report: three-valued per-file truth, the
-      // sidecar export path, and the honest not-removed list. `edits` stays
-      // empty so Retry is disabled (a strip retry must re-preview through the
-      // GPS channel, not the plain edit channel).
-      useUiStore.getState().setLastWrite({
-        label: `Remove GPS — ${selectedPaths.length} file${selectedPaths.length === 1 ? '' : 's'}`,
-        edits: [],
-        outcome: result.outcome,
-        commandPreview: result.commandPreview,
-        consistencyNotes: result.consistencyNotes,
-        at: new Date().toISOString(),
-        scrub: {
-          exportedValuesPath: stripPreview.exportedValuesPath,
-          notRemoved: stripPreview.notRemoved,
-        },
-      });
-      setStripPreview(null);
-      navigate('/results');
-    } catch (cause) {
-      // The server's refusal, verbatim (wrong phrase, locked session, RAW…).
-      setRefusal(cause instanceof Error ? cause.message : String(cause));
-      setDialogOpen(false);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -283,75 +253,13 @@ function GpsStrip({ selectedPaths }: { selectedPaths: string[] }) {
           variant="outline"
           size="sm"
           className="border-destructive/60 text-destructive"
-          disabled={busy || previewBusy}
+          disabled={runner.busy || previewBusy}
           onClick={() => void openDialog()}
         >
           {previewBusy ? 'Reading GPS tags…' : 'Remove GPS from selection…'}
         </Button>
       </div>
       {previewError !== null && <div className="mt-2 text-xs text-destructive">{previewError}</div>}
-
-      {refusal !== null && (
-        <div className="mt-3 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs">
-          <div className="font-semibold text-warning">
-            This was refused — nothing was changed.
-          </div>
-          <p className="mt-1 break-words font-mono">{refusal}</p>
-        </div>
-      )}
-
-      <ConfirmDialog
-        open={dialogOpen}
-        danger
-        title={`Remove ALL GPS data from ${affectedFiles.length} file${affectedFiles.length === 1 ? '' : 's'}?`}
-        confirmLabel={phrase === GPS_CONFIRM_PHRASE ? 'Strip GPS data now' : `Type “${GPS_CONFIRM_PHRASE}” first`}
-        cancelLabel="Keep location"
-        onConfirm={() => void attemptStrip()}
-        onCancel={() => setDialogOpen(false)}
-      >
-        <p>
-          This is a privacy strip, not an edit. Every GPS tag below is deleted from each file, and
-          the full current values are exported to a journal sidecar first.
-        </p>
-        <div className="max-h-56 overflow-auto rounded border border-border bg-background/40 p-2">
-          {affectedFiles.length === 0 ? (
-            <p className="text-xs">No GPS tags were found in the selection — there is nothing to remove.</p>
-          ) : (
-            affectedFiles.map((row) => (
-              <div key={row.filePath} className="mb-1.5">
-                <div className="truncate font-mono text-xs font-semibold">{basename(row.filePath)}</div>
-                <div className="font-mono text-[11px] text-muted-foreground">{row.tags.join(' · ')}</div>
-              </div>
-            ))
-          )}
-        </div>
-        {stripPreview !== null && stripPreview.notRemoved.length > 0 && (
-          <div className="rounded-md border border-warning/50 bg-warning/10 px-2 py-1.5 text-[11px]">
-            <span className="font-semibold text-warning">
-              {stripPreview.notRemoved.length} GPS item(s) can NOT be removed by this version:
-            </span>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4">
-              {stripPreview.notRemoved.map((row) => (
-                <li key={`${row.filePath}:${row.tag}`}>
-                  <span className="font-mono">{basename(row.filePath)}</span> — {row.tag}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <label htmlFor="gps-phrase" className="block text-xs font-medium">
-          Type “{GPS_CONFIRM_PHRASE}” to confirm
-        </label>
-        <Input
-          id="gps-phrase"
-          value={phrase}
-          onChange={(event) => setPhrase(event.target.value)}
-          placeholder={GPS_CONFIRM_PHRASE}
-          autoComplete="off"
-          spellCheck={false}
-          className="max-w-xs font-mono"
-        />
-      </ConfirmDialog>
     </section>
   );
 }

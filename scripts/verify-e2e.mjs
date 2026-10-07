@@ -28,8 +28,9 @@
  *             app/tests-e2e/__evidence-snapshot__/ is byte-identical to
  *             app/evidence/ file-by-file (sha256, exactly the 10 frames of
  *             record on both sides) and MANIFEST.txt lists EVERY frame with
- *             its capture date and the claim it proves, the three leaf-2.3.1
- *             retakes (01/09/10) marked `retaken`. No app boot, no browser.
+ *             its capture date and the claim it proves, the sanctioned
+ *             retakes (leaf-2.3.1: 01/09/10; arch-v11 leaf 1.4: 06) marked
+ *             `retaken`. No app boot, no browser.
  *   all       unit + roundtrip + scrub + gps + the Playwright matrix
  *             (app/tests-e2e/matrix.mjs: real launcher + built UI bundle +
  *             screenshots) + the same evidence-snapshot check, and prints the
@@ -971,8 +972,11 @@ const EVIDENCE_FRAMES = [
   '09-console.png',
   '10-settings.png',
 ];
-/** The frames the wave-6 Evidence Collector flagged; leaf 2.3.1 re-shot them. */
-const RETAKEN_FRAMES = new Set(['01-home.png', '09-console.png', '10-settings.png']);
+/** The frames the wave-6 Evidence Collector flagged; leaf 2.3.1 re-shot them.
+ * arch-v11 leaf 1.4 adds 06-scrub-confirm: the wizard confirm step it depicted
+ * moved into the Save Review modal, so the committed bytes showed a removed
+ * surface. It joins the retake contract (matrix.mjs RETAKE_SET mirrors this). */
+const RETAKEN_FRAMES = new Set(['01-home.png', '09-console.png', '10-settings.png', '06-scrub-confirm.png']);
 
 /**
  * The committed mirror must be byte-identical to app/evidence/ (file-by-file
@@ -1041,7 +1045,7 @@ function verifyEvidenceSnapshot() {
       if (!isoDate(retakenDate)) fail(`MANIFEST.txt's ${frame} retaken date is not a real date: ${retakenDate}`);
       retakenSeen.push(`${frame} (captured ${capturedDate}, retaken ${retakenDate})`);
     } else if (retakenDate !== undefined) {
-      fail(`MANIFEST.txt marks accepted frame ${frame} as retaken — only 01/09/10 were retaken`);
+      fail(`MANIFEST.txt marks accepted frame ${frame} as retaken — only the sanctioned retakes (01/09/10, 06-scrub-confirm) were retaken`);
     }
   }
   step('manifest', `every frame listed with capture date + claim; retakes: ${retakenSeen.join('; ')}`);

@@ -152,11 +152,13 @@ export function BatchPanel() {
         const envelope = await previewWrite(group.files, group.edits, timezone);
         previewGroups.push({
           label: group.label,
+          evidence: 'previewed',
           preview: envelope.preview,
           commandPreview: envelope.commandPreview,
         });
       }
       runner.review(previewGroups, {
+        kind: 'edits',
         title: 'Batch review — check every change before you allow it',
         edits: fieldEdits,
         ...(timezone !== undefined ? { timezone } : {}),

@@ -9,6 +9,7 @@ import type {
   BackupRecord,
   BatchOutcome,
   ScrubScope,
+  TagDiff,
   WriteOutcome,
   WritePreview,
 } from '@metadesk/shared';
@@ -197,6 +198,30 @@ export interface ScrubPreviewResponse {
   note: string;
 }
 
+/**
+ * A DETECTION projection for the Save Review gate — what the scrub scan found,
+ * keyed by the REAL detection id. Deliberately NOT a WritePreview: there is no
+ * previewId, no planId, and no per-file argv, because the destructive wipe
+ * RE-DETECTS from a fresh scan before it runs (scrub.ts) and its delete list is
+ * a union that can exceed these rows. The gate labels that gap instead of
+ * claiming exact-change truth; casting this to WritePreview is forbidden.
+ */
+export interface DetectedPreviewFile {
+  filePath: string;
+  /** Delete rows built from the detection's affectedTags, values AS-SCANNED. */
+  diffs: TagDiff[];
+  warnings: string[];
+  noop: boolean;
+}
+
+export interface DetectedPreview {
+  /** The detection's real id (report.scrubId) — never fabricated. */
+  detectionId: string;
+  files: DetectedPreviewFile[];
+  /** Detection rows never block the write; scrub skips are honest skips. */
+  blockers: [];
+}
+
 /** POST /api/scrub/execute response. */
 export interface ScrubExecuteResponse {
   outcome: BatchOutcome;
@@ -232,11 +257,10 @@ export interface GpsStripPreviewResponse extends WritePreviewResponse {
 
 /**
  * POST /api/write/execute {previewId, destructive:{confirmationPhrase}} — the
- * outcome of a phrase-gated GPS strip (or any destructive execute).
+ * outcome of a phrase-gated GPS strip is a plain WriteExecuteResponse (the
+ * destructive envelope changes the request, not the response shape; the runner
+ * fires it NON-streamed so the consistencyNotes channel survives).
  */
-export interface GpsStripExecuteResponse extends WriteExecuteResponse {
-  outcome: BatchOutcomeWithCancel;
-}
 
 /** POST /api/write/cancel {batchId} — a cooperative, between-chunks cancel. */
 export interface CancelWriteResponse {

@@ -19,7 +19,6 @@ import type {
 import type {
   CancelWriteResponse,
   ExecuteStreamFrame,
-  GpsStripExecuteResponse,
   GpsStripPreviewResponse,
   HealthWithWrite,
   RecoveryFixAction,
@@ -293,6 +292,15 @@ export interface ExecuteWriteOptions {
   /** Stream SSE-framed chunk progress on the response itself. */
   stream?: boolean;
   onFrame?: (frame: ExecuteStreamFrame) => void;
+  /**
+   * The destructive envelope (the GPS strip): the server re-checks this phrase
+   * against the one the preview minted and refuses 403 without writing
+   * anything on mismatch. Accepted on BOTH the plain and streamed body paths;
+   * the runner only ever sends it NON-streamed — the streamed batch-complete
+   * frame omits consistencyNotes, which would kill the engine-cross-check
+   * channel on the Results report.
+   */
+  destructive?: { confirmationPhrase: string };
 }
 
 /**
@@ -309,7 +317,10 @@ export async function executeWrite(
   if (options.stream !== true) {
     const result = await request<WriteExecuteResponse>('/api/write/execute', {
       method: 'POST',
-      body: JSON.stringify({ previewId }),
+      body: JSON.stringify({
+        previewId,
+        ...(options.destructive !== undefined ? { destructive: options.destructive } : {}),
+      }),
     });
     capturePreview(result, 'write execute', false);
     return result;
@@ -329,7 +340,11 @@ export async function executeWrite(
     response = await fetch('/api/write/execute', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ previewId, stream: true }),
+      body: JSON.stringify({
+        previewId,
+        stream: true,
+        ...(options.destructive !== undefined ? { destructive: options.destructive } : {}),
+      }),
     });
   } catch (cause) {
     throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
@@ -470,24 +485,6 @@ export function previewGpsStrip(files: string[]): Promise<GpsStripPreviewRespons
     body: JSON.stringify({ files, destructive: { scope: 'gps' } }),
   }).then((result) => {
     capturePreview(result, `GPS strip preview · ${files.length} file(s)`, false);
-    return result;
-  });
-}
-
-/**
- * POST /api/write/execute {previewId, destructive:{confirmationPhrase}} — the
- * phrase-gated execution of a GPS-strip preview. The server re-checks the
- * phrase and refuses (403) without writing anything unless it matches exactly.
- */
-export function executeGpsStrip(
-  previewId: string,
-  confirmationPhrase: string,
-): Promise<GpsStripExecuteResponse> {
-  return request<GpsStripExecuteResponse>('/api/write/execute', {
-    method: 'POST',
-    body: JSON.stringify({ previewId, destructive: { confirmationPhrase } }),
-  }).then((result) => {
-    capturePreview(result, 'GPS strip execute', false);
     return result;
   });
 }

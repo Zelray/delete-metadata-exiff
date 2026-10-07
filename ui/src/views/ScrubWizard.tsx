@@ -1,27 +1,28 @@
 import { useMemo, useState } from 'react';
-import { scrubExecute, scrubPreview } from '../api/client';
+import { scrubPreview } from '../api/client';
 import { useUiStore } from '../state/store';
 import { navigate } from '../lib/router';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
-import { Input } from '../components/ui/controls';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
-import type { ScrubDetection, TagEdit } from '../write/types';
+import { useWriteRunner } from '../write/useWriteRun';
+import type { DetectedPreview, ScrubDetection, TagEdit } from '../write/types';
 import { basename } from '../lib/format';
 
 /** Server cap for one scrub scan (writes.ts MAX_SCRUB_FILES). */
 const MAX_SCRUB_FILES = 1000;
 
-type Step = 'detect' | 'findings' | 'confirm';
+type Step = 'detect' | 'findings';
 
 /**
- * Strip / Clean wizard v1 — the AI-scrub (route /scrub): detect → findings →
- * gated confirm → execute. Removable tags are listed per file with values; the
- * cannot-be-removed section is rendered prominently (ComfyUI prompt/workflow
- * chunks, C2PA — no metadata tool can delete these in safe mode); the
- * hidden-alpha warning tells the truth about pixel-level data; the full
- * original values are exported to a sidecar before anything is removed.
+ * Strip / Clean wizard v1 — the AI-scrub (route /scrub): detect → findings,
+ * then the typed-phrase gate opens in the SHARED Save Review modal (the
+ * runner is the only place a write fires). Removable tags are listed per file
+ * with values; the cannot-be-removed section is rendered prominently (ComfyUI
+ * prompt/workflow chunks, C2PA — no metadata tool can delete these in safe
+ * mode); the hidden-alpha warning tells the truth about pixel-level data; the
+ * full original values are exported to a sidecar before anything is removed.
  */
 export function ScrubWizard() {
   const selectedPaths = useUiStore((s) => s.selectedPaths);
@@ -29,14 +30,12 @@ export function ScrubWizard() {
   const searchText = useUiStore((s) => s.searchText);
   const badges = useUiStore((s) => s.badges);
   const noteBadges = useUiStore((s) => s.noteBadges);
+  const runner = useWriteRunner();
 
   const [step, setStep] = useState<Step>('detect');
   const [report, setReport] = useState<ScrubDetection | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [phrase, setPhrase] = useState('');
-  const [executing, setExecuting] = useState(false);
-  const [execError, setExecError] = useState<unknown>(null);
 
   /** The files the wizard would scan: the selection, else the filtered folder. */
   const scope = useMemo(() => {
@@ -82,49 +81,107 @@ export function ScrubWizard() {
     () => (report !== null ? [...new Set(report.affectedTags.map((row) => row.filePath))] : []),
     [report],
   );
-  const canConfirm = report !== null && phrase === report.confirmationPhrase && affectedFiles.length > 0;
 
-  const execute = async (): Promise<void> => {
-    if (!canConfirm || executing) return;
-    setExecuting(true);
-    setExecError(null);
-    try {
-      const files = affectedFiles;
-      const result = await scrubExecute(files, phrase);
-      // The same Results surface every write uses, plus the scrub extras.
-      useUiStore.getState().setLastWrite({
-        label: `AI-metadata scrub — ${files.length} file(s)`,
-        edits: [...new Set(result.report.affectedTags.map((row) => row.tag))].map(
+  /**
+   * Open the Save Review gate: one DETECTED group (delete rows from
+   * affectedTags, values as-scanned — the wipe re-detects from a fresh scan,
+   * so no exact preview exists) plus the phrase, the honest cannot-remove
+   * rows, and the onRecorded badge refresh. The typed phrase travels with the
+   * confirm; the wipe itself fires inside the runner.
+   */
+  const openConfirm = (): void => {
+    if (report === null || affectedFiles.length === 0) return;
+    const findingByPath = new Map(report.files.map((file) => [file.filePath, file]));
+    const detected: DetectedPreview = {
+      detectionId: report.scrubId,
+      files: affectedFiles.map((filePath) => {
+        const finding = findingByPath.get(filePath);
+        return {
+          filePath,
+          diffs: report.affectedTags
+            .filter((row) => row.filePath === filePath)
+            .map((row) => ({ tag: row.tag, before: row.value, kind: 'delete' as const })),
+          warnings:
+            finding?.possibleHiddenAlphaData === true
+              ? [
+                  finding.hiddenAlphaNote ??
+                    'This file may hide data inside the image pixels themselves — MetaDesk cannot scrub pixels.',
+                ]
+              : [],
+          noop: false,
+        };
+      }),
+      blockers: [],
+    };
+    runner.review(
+      [
+        {
+          label: 'AI metadata to remove',
+          evidence: 'detected',
+          detected,
+        },
+      ],
+      {
+        kind: 'scrub',
+        // The title doubles as the lastWrite label — HEAD's exact wording.
+        title: `AI-metadata scrub — ${affectedFiles.length} file(s)`,
+        files: affectedFiles,
+        destructive: { confirmationPhrase: report.confirmationPhrase },
+        destructiveNote:
+          'The full original values are exported to a file beside the journal before anything is removed — the last copy of those prompts. Every file gets a verified _original backup first; items listed as cannot-be-removed will still be in the files afterward.',
+        confirmLabel: `Remove AI metadata from ${affectedFiles.length} file${affectedFiles.length === 1 ? '' : 's'}`,
+        cannotRemove: [
+          ...report.files.flatMap((file) =>
+            file.tags
+              .filter((tag) => !tag.removable)
+              .map((tag) => ({
+                filePath: file.filePath,
+                tag: tag.tag,
+                reason: tag.note ?? 'Not removable by name.',
+              })),
+          ),
+          ...report.files.flatMap((file) => {
+            const rows: Array<{ filePath: string; tag: string; reason: string }> = [];
+            if (file.possibleHiddenAlphaData) {
+              rows.push({
+                filePath: file.filePath,
+                tag: '(pixel data / alpha channel)',
+                reason:
+                  file.hiddenAlphaNote ??
+                  'Some tools hide prompts in pixel data (alpha channel) or burn watermarks. No metadata tool can remove these; MetaDesk flags the risk instead of claiming a clean file.',
+              });
+            }
+            if (file.c2paPresent || file.jumbfPresent) {
+              rows.push({
+                filePath: file.filePath,
+                tag: file.c2paPresent ? 'C2PA manifest' : 'JUMBF structure',
+                reason:
+                  'Content Credentials live in a JUMBF structure that can only be removed with a group delete, which this version refuses. Flagged, not removed.',
+              });
+            }
+            return rows;
+          }),
+        ],
+        recordEdits: [...new Set(report.affectedTags.map((row) => row.tag))].map(
           (tag): TagEdit => ({ tag, op: 'delete' }),
         ),
-        outcome: result.outcome,
-        commandPreview: result.commandPreview,
-        consistencyNotes: result.consistencyNotes,
-        at: new Date().toISOString(),
-        scrub: {
-          exportedValuesPath: result.exportedValuesPath,
-          notRemoved: result.notRemoved,
+        onRecorded: (result) => {
+          // Honest badge refresh: only files that were actually cleaned drop the flag.
+          const stillFlagged = new Set(result.notRemoved.map((row) => row.filePath));
+          for (const outcome of result.outcome.files) {
+            const existing = useUiStore.getState().badges[outcome.filePath];
+            useUiStore.getState().noteBadges(outcome.filePath, {
+              hasGps: existing?.hasGps ?? false,
+              hasCopyright: existing?.hasCopyright ?? false,
+              aiGenerated:
+                outcome.status === 'updated' && outcome.verified === true && !stillFlagged.has(outcome.filePath)
+                  ? false
+                  : existing?.aiGenerated ?? null,
+            });
+          }
         },
-      });
-      // Honest badge refresh: only files that were actually cleaned drop the flag.
-      const stillFlagged = new Set(result.notRemoved.map((row) => row.filePath));
-      for (const outcome of result.outcome.files) {
-        const existing = useUiStore.getState().badges[outcome.filePath];
-        useUiStore.getState().noteBadges(outcome.filePath, {
-          hasGps: existing?.hasGps ?? false,
-          hasCopyright: existing?.hasCopyright ?? false,
-          aiGenerated:
-            outcome.status === 'updated' && outcome.verified === true && !stillFlagged.has(outcome.filePath)
-              ? false
-              : existing?.aiGenerated ?? null,
-        });
-      }
-      navigate('/results');
-    } catch (cause) {
-      setExecError(cause);
-    } finally {
-      setExecuting(false);
-    }
+      },
+    );
   };
 
   if (scanResult === null && selectedPaths.length === 0) {
@@ -159,7 +216,6 @@ export function ScrubWizard() {
           [
             ['detect', '1 · Detect'],
             ['findings', '2 · Findings'],
-            ['confirm', '3 · Confirm & remove'],
           ] as const
         ).map(([value, label]) => (
           <li
@@ -175,9 +231,6 @@ export function ScrubWizard() {
       </ol>
 
       {error !== null && <ErrorBanner error={error} context="Scanning for AI metadata" onRetry={() => void detect()} />}
-      {execError !== null && (
-        <ErrorBanner error={execError} context="Running the scrub" onRetry={() => setExecError(null)} />
-      )}
 
       {step === 'detect' && (
         <section className="space-y-3 rounded-lg border border-border px-4 py-4">
@@ -207,65 +260,13 @@ export function ScrubWizard() {
       {step === 'findings' && report !== null && (
         <FindingsStep
           report={report}
-          onNext={() => setStep('confirm')}
+          onNext={openConfirm}
           onBack={() => setStep('detect')}
           affectedCount={affectedFiles.length}
         />
       )}
 
-      {step === 'confirm' && report !== null && (
-        <section className="space-y-4">
-          <div className="rounded-lg border border-destructive/50 bg-destructive/5 px-4 py-3">
-            <div className="text-sm font-semibold text-destructive">
-              Removing AI metadata from {affectedFiles.length} file{affectedFiles.length === 1 ? '' : 's'} is
-              destructive
-            </div>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
-              <li>
-                The full original values are exported to a file beside the journal{' '}
-                <strong>before</strong> anything is removed — the last copy of those prompts.
-              </li>
-              <li>Every file gets a verified _original backup first; the write is re-read and checked after.</li>
-              <li>Items listed under “cannot be removed” will still be in the files — flagged, not silently skipped.</li>
-            </ul>
-            <label htmlFor="scrub-phrase" className="mt-3 block text-xs font-medium">
-              Type “{report.confirmationPhrase}” to enable removal
-            </label>
-            <Input
-              id="scrub-phrase"
-              value={phrase}
-              onChange={(event) => setPhrase(event.target.value)}
-              placeholder={report.confirmationPhrase}
-              autoComplete="off"
-              spellCheck={false}
-              className="mt-1 max-w-xs font-mono"
-            />
-          </div>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => setStep('findings')}>
-              Back to findings
-            </Button>
-            <Button
-              variant="danger"
-              disabled={!canConfirm || executing}
-              onClick={() => void execute()}
-              title={
-                affectedFiles.length === 0
-                  ? 'Nothing removable was found.'
-                  : `Type "${report.confirmationPhrase}" to enable.`
-              }
-            >
-              {executing ? 'Scrubbing…' : `Remove AI metadata from ${affectedFiles.length} file${affectedFiles.length === 1 ? '' : 's'}`}
-            </Button>
-          </div>
-          {executing && (
-            <div className="rounded-lg border border-accent/40 bg-accent-soft px-3 py-2 text-xs" role="status">
-              Scrubbing through the normal write pipeline — backups, journal, re-read verification.
-              The Results report opens when it finishes.
-            </div>
-          )}
-        </section>
-      )}
+      {runner.modal}
     </div>
   );
 }

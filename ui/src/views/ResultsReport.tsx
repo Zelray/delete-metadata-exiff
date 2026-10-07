@@ -53,11 +53,13 @@ export function ResultsReport() {
         [
           {
             label: `Retry — ${failedPaths.length} failed file${failedPaths.length === 1 ? '' : 's'}`,
+            evidence: 'previewed',
             preview: envelope.preview,
             commandPreview: envelope.commandPreview,
           },
         ],
         {
+          kind: 'edits',
           title: 'Retry review — only the files that failed last time',
           edits: lastWrite.edits,
           ...(lastWrite.timezone !== undefined ? { timezone: lastWrite.timezone } : {}),
