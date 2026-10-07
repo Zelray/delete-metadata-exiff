@@ -98,20 +98,109 @@ function capturePreview(data: unknown, context: string, readOnly = true): void {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set('Accept', 'application/json');
-  const token = readBootstrap().token;
-  if (token !== '') headers.set('X-MetaDesk-Token', token);
-  if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
+// --- Transport (the only code in this file that touches fetch) ---------------
+//
+// Endpoints own policy — routes, payloads, capturePreview sites, bespoke error
+// copy. These private helpers own the plumbing every endpoint used to
+// re-implement: the token door, the fetch wrap, the envelope test, the failure
+// mapper, and the SSE read loop.
 
-  let response: Response;
+/** The one place that reads the handshake token for sending. */
+function tokenValue(): string {
+  return readBootstrap().token;
+}
+
+/**
+ * The one credentials door: `{...extra}` plus `X-MetaDesk-Token` IFF the
+ * per-launch token exists (the header is omitted wholesale when the bootstrap
+ * token is ''). Extra rides FIRST, so a caller can never clobber the token.
+ */
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  const token = tokenValue();
+  if (token !== '') headers['X-MetaDesk-Token'] = token;
+  return headers;
+}
+
+/** THE only fetch call in this file: any network failure is a TransportError(0). */
+async function send(path: string, init?: RequestInit): Promise<Response> {
   try {
-    response = await fetch(path, { ...init, headers });
+    return await fetch(path, init);
   } catch (cause) {
     throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
   }
+}
 
+/** The envelope predicate (null guard included — literal JSON null is not one). */
+function isEnvelope(body: unknown): body is ApiError {
+  return (
+    body !== undefined &&
+    body !== null &&
+    typeof body === 'object' &&
+    'code' in body &&
+    'message' in body
+  );
+}
+
+/**
+ * Map a non-ok response to its thrown failure: an ApiError envelope becomes a
+ * MetaApiError; anything else becomes a TransportError with the assembled
+ * `${label} (HTTP N).` Labels are caller-owned human sentences — five distinct
+ * ones today, never unified here.
+ */
+async function failureOf(response: Response, label: string): Promise<never> {
+  const text = await response.text();
+  let body: unknown = undefined;
+  try {
+    body = text === '' ? undefined : (JSON.parse(text) as unknown);
+  } catch {
+    body = undefined;
+  }
+  if (isEnvelope(body)) throw new MetaApiError(response.status, body);
+  throw new TransportError(response.status, `${label} (HTTP ${response.status}).`);
+}
+
+/**
+ * The shared SSE read loop: buffer bytes, split on the literal '\n\n' frame
+ * boundary, and hand every frame to the callback CRLF-safely (exiftool emits
+ * CRLF — BUILD-NOTES fact 2). Deliberately NO try/finally, NO reader.cancel(),
+ * NO releaseLock, and NO final decoder flush: a throw from a frame handler
+ * abandons the stream in place, and a trailing unterminated frame stays
+ * dropped.
+ */
+async function readSse(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (frame: Record<string, unknown>) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const rawFrame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf('\n\n');
+      const parsed = parseSseFrame(rawFrame);
+      if (parsed !== null) onFrame(parsed);
+    }
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set('Accept', 'application/json');
+  const token = tokenValue();
+  if (token !== '') headers.set('X-MetaDesk-Token', token);
+  if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
+
+  const response = await send(path, { ...init, headers });
+
+  // The read + parse deliberately precede the ok-check: an unreadable body is
+  // its own honest failure at either status (order pinned by identity).
   const text = await response.text();
   let body: unknown = undefined;
   try {
@@ -124,10 +213,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const envelope = body as ApiError | undefined;
-    if (envelope !== undefined && envelope !== null && typeof envelope === 'object' && 'code' in envelope && 'message' in envelope) {
-      throw new MetaApiError(response.status, envelope as ApiError);
-    }
+    if (isEnvelope(body)) throw new MetaApiError(response.status, body);
     throw new TransportError(response.status, `Request failed (HTTP ${response.status}).`);
   }
   return body as T;
@@ -164,18 +250,11 @@ export function getMetadata(filePath: string, depth: MetadataDepth): Promise<Met
 export async function getThumbnail(filePath: string): Promise<ThumbnailInfo> {
   const params = new URLSearchParams({ path: filePath });
   const endpoint = `/api/thumbnail?${params.toString()}`;
-  const headers: Record<string, string> = {};
-  const token = readBootstrap().token;
-  if (token !== '') headers['X-MetaDesk-Token'] = token;
   // The endpoint streams raw image/jpeg bytes (BUILD-NOTES route pin) and an
   // <img> tag cannot send the X-MetaDesk-Token header — so the client fetches
-  // the bytes itself and hands the view an object URL.
-  let response: Response;
-  try {
-    response = await fetch(endpoint, { headers });
-  } catch (cause) {
-    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
-  }
+  // the bytes itself and hands the view an object URL. Token-ONLY headers: no
+  // Accept, and this path deliberately does NOT classify envelopes.
+  const response = await send(endpoint, { headers: authHeaders() });
   if (response.status === 404) {
     throw new MetaApiError(404, {
       code: 'not_found',
@@ -223,10 +302,9 @@ export function runConsole(args: string[]): Promise<ConsoleRunResult> {
 /** Fetch one binary tag (thumbnail/preview/ICC) as a downloadable blob. */
 export async function downloadBinary(filePath: string, tag: string): Promise<void> {
   const params = new URLSearchParams({ path: filePath, tag });
-  const headers: Record<string, string> = {};
-  const token = readBootstrap().token;
-  if (token !== '') headers['X-MetaDesk-Token'] = token;
-  const response = await fetch(`/api/file/binary?${params.toString()}`, { headers });
+  const response = await send(`/api/file/binary?${params.toString()}`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) {
     throw new TransportError(response.status, `Extract failed (HTTP ${response.status}).`);
   }
@@ -326,50 +404,32 @@ export async function executeWrite(
     return result;
   }
 
-  const headers: Record<string, string> = {
+  const headers = authHeaders({
     Accept: 'text/event-stream',
     // Fastify only parses the JSON body when Content-Type says JSON — without
     // this the server 400s with "body must include previewId" (e2e matrix bug).
     'Content-Type': 'application/json',
-  };
-  const token = readBootstrap().token;
-  if (token !== '') headers['X-MetaDesk-Token'] = token;
+  });
 
-  let response: Response;
-  try {
-    response = await fetch('/api/write/execute', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        previewId,
-        stream: true,
-        ...(options.destructive !== undefined ? { destructive: options.destructive } : {}),
-      }),
-    });
-  } catch (cause) {
-    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
-  }
+  // No AbortController here, by pin: post-Back progress is REAL frame data, and
+  // this init carries no 'signal' key. A stream refusal rides the same envelope
+  // door as every other endpoint.
+  const response = await send('/api/write/execute', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      previewId,
+      stream: true,
+      ...(options.destructive !== undefined ? { destructive: options.destructive } : {}),
+    }),
+  });
   if (!response.ok) {
-    const text = await response.text();
-    let envelope: ApiError | undefined;
-    try {
-      envelope = text === '' ? undefined : (JSON.parse(text) as ApiError);
-    } catch {
-      envelope = undefined;
-    }
-    if (envelope !== undefined && typeof envelope === 'object' && 'code' in envelope && 'message' in envelope) {
-      throw new MetaApiError(response.status, envelope);
-    }
-    throw new TransportError(response.status, `The write failed (HTTP ${response.status}).`);
+    await failureOf(response, 'The write failed');
   }
   if (response.body === null) {
     throw new TransportError(response.status, 'The server closed the progress stream early.');
   }
 
-  // exiftool emits CRLF (BUILD-NOTES fact 2); the frame parser is CRLF-safe.
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
   // Held in a box because the assignment happens inside the frame handler.
   const result: { complete: WriteExecuteResponse | null } = { complete: null };
 
@@ -399,19 +459,7 @@ export async function executeWrite(
     }
   };
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf('\n\n');
-    while (boundary !== -1) {
-      const rawFrame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      boundary = buffer.indexOf('\n\n');
-      const parsed = parseSseFrame(rawFrame);
-      if (parsed !== null) handleFrame(parsed);
-    }
-  }
+  await readSse(response.body, handleFrame);
 
   if (result.complete === null) {
     throw new TransportError(
@@ -538,31 +586,11 @@ export interface DiagnosticsBundleResult {
  * has already saved the same bytes on disk; `savedPath` is where.
  */
 export async function createDiagnosticsBundle(): Promise<DiagnosticsBundleResult> {
-  const headers: Record<string, string> = { Accept: 'application/zip' };
-  const token = readBootstrap().token;
-  if (token !== '') headers['X-MetaDesk-Token'] = token;
-
-  let response: Response;
-  try {
-    response = await fetch('/api/diagnostics/bundle', { headers });
-  } catch (cause) {
-    throw new TransportError(0, `Could not reach the MetaDesk server: ${String(cause)}`);
-  }
+  const response = await send('/api/diagnostics/bundle', {
+    headers: authHeaders({ Accept: 'application/zip' }),
+  });
   if (!response.ok) {
-    const text = await response.text();
-    let envelope: ApiError | undefined;
-    try {
-      envelope = text === '' ? undefined : (JSON.parse(text) as ApiError);
-    } catch {
-      envelope = undefined;
-    }
-    if (envelope !== undefined && typeof envelope === 'object' && 'code' in envelope && 'message' in envelope) {
-      throw new MetaApiError(response.status, envelope);
-    }
-    throw new TransportError(
-      response.status,
-      `The diagnostics bundle could not be created (HTTP ${response.status}).`,
-    );
+    await failureOf(response, 'The diagnostics bundle could not be created');
   }
 
   const blob = await response.blob();
@@ -604,35 +632,24 @@ export function subscribeEvents(
   onDisconnected?: () => void,
 ): Unsubscribe {
   const controller = new AbortController();
-  const headers: Record<string, string> = { Accept: 'text/event-stream' };
-  const token = readBootstrap().token;
-  if (token !== '') headers['X-MetaDesk-Token'] = token;
 
   void (async () => {
     let lastSeq = -1;
     try {
-      const response = await fetch('/api/events', { headers, signal: controller.signal });
+      const response = await send('/api/events', {
+        headers: authHeaders({ Accept: 'text/event-stream' }),
+        signal: controller.signal,
+      });
+      // The one deliberate exception to the envelope door: a refused or empty
+      // /api/events response is a SILENT return — disconnects must never become
+      // errors above SseBridge's backoff.
       if (!response.ok || response.body === null) return;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let boundary = buffer.indexOf('\n\n');
-        while (boundary !== -1) {
-          const rawEvent = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          boundary = buffer.indexOf('\n\n');
-          const parsed = parseSseFrame(rawEvent);
-          if (parsed === null) continue;
-          const seq = typeof parsed['seq'] === 'number' ? parsed['seq'] : lastSeq + 1;
-          if (seq <= lastSeq) continue; // duplicate/replay — drop
-          lastSeq = seq;
-          onEvent(parsed as unknown as SseEvent);
-        }
-      }
+      await readSse(response.body, (parsed) => {
+        const seq = typeof parsed['seq'] === 'number' ? parsed['seq'] : lastSeq + 1;
+        if (seq <= lastSeq) return; // duplicate/replay — drop
+        lastSeq = seq;
+        onEvent(parsed as unknown as SseEvent);
+      });
     } catch {
       // Aborted or disconnected — the caller reconnects with backoff.
     } finally {
