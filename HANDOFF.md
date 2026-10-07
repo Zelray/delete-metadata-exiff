@@ -597,3 +597,69 @@ write-progress topic; batch re-attach/status endpoint (real reload recovery); fo
 trap on the gate modal; deletion of BatchPanel's occluded view chrome (with the
 cancel.wiring pin owner's consent); whole-runner hoist (useWriteRunner/WriteRunner
 deletion) as optional hygiene; router.ts:8 comment touch.
+
+### 9.6 arch-v11 leaf 1.6 — UI: a transport under client.ts's endpoints (2026-10-07, committed `665ef7a` + `4ea1711`)
+
+Implemented architecture-review candidate 6 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.6" — a three-verifier merge of a
+4-designer round (workflow wf_920f82e7-a1e; 7/7 returned; the card measured TRUE with
+a catalog: token-header ×6, network-wrap ×4 + one bare fetch, envelope-parse ×3 with
+five distinct fallback labels, SSE loop ×2; the blob/objectURL trio deliberately NOT
+extracted — three different URL-ownership policies). Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.6.md`.
+
+What changed (TWO files only; zero new exports, zero consumer edits, zero wire
+changes beyond the declared deltas):
+
+- **SIX module-private helpers** in `ui/src/api/client.ts` — tokenValue(), authHeaders(extra?),
+  send(path, init) (THE only fetch, byte-identical TransportError(0) wrap),
+  isEnvelope() (request()'s null-guarded predicate), failureOf(response, label)
+  (assembles `${label} (HTTP N).`; exactly TWO callers: executeWrite's streamed
+  refusal path + createDiagnosticsBundle), readSse(body, onFrame) (the SSE loop moved
+  verbatim: no try/finally, no reader.cancel, no releaseLock, no final flush — a
+  throw abandons the stream). The five special paths (getThumbnail, downloadBinary,
+  executeWrite streamed arm, subscribeEvents, createDiagnosticsBundle) rewritten onto
+  them; request() keeps HEAD's exact operation order per the ORCHESTRATOR
+  AMENDMENT recorded in the contract (the builder's disclosure: the original two
+  contract sentences were jointly unsatisfiable without changing one human message;
+  ruled for byte-identity). capturePreview stays endpoint policy (13 sites unchanged).
+- **Exactly TWO declared deltas**: downloadBinary's network failure now throws
+  TransportError(0, 'Could not reach the MetaDesk server: …') instead of raw
+  'TypeError: Failed to fetch' (surface: DetailViewer's extract row String(error);
+  ErrorBanner NOT involved); executeWrite/createDiagnosticsBundle envelope
+  classification gains the null guard (literal-JSON-null non-ok bodies now yield the
+  honest fallback instead of TypeError). ALL TWELVE human messages otherwise
+  byte-identical (review-verified).
+- **NEW `ui/src/api/client.transport.test.ts`** (306 lines, 14 tests, `//
+  @vitest-environment jsdom` line 1): pins TransportError(0) identity,
+  failureOf→MetaApiError, assembled labels character-for-character, request()'s
+  could-not-read message exactly, the null-guard hardening, ok+empty→undefined,
+  authHeaders both branches, streamed init (Accept/Content-Type pair, NO signal key,
+  '"stream":true'), unsubscribe-suppresses-onDisconnected, CRLF/split-chunk/invalid
+  frames, write-error→MetaApiError-500 AND stream-abandoned (cancel-recording
+  stream), duplicate-seq drop. **All six existing fetch-stub suites pass UNMODIFIED —
+  the wire-identity canary and the leaf's binding acceptance gate.**
+- **The binding acceptance constraint** (from the design round's stub map): fetch is
+  called with a bare relative-path STRING and pre-stringified bodies; no URL objects
+  (the Settings suite stubs global URL as non-constructible); no transport-level
+  timeout/retry/AbortController EVER (writeRun.session's never-resolving-fetch test
+  forbids it structurally); the events fetch stays inside subscribeEvents' try/catch
+  (the e2e pageerror gate).
+
+Gates: G1–G9 DOUBLE-BOUND green on final bytes (builder sequential ×2; orchestrator
+pass 1 bound G1-G7+G9 with G8 tripping ONCE — 'Undo step 1: TypeError: fetch failed',
+a harness-side connection failure with every real flow green around it; immediate
+sequential re-run bound ALL NINE — recorded ambient-flake class, leaf-1.4 G3
+precedent). Senior review (G10): PASS, zero CRITICAL/HIGH/MEDIUM; NIT-1 (MANIFEST
+provenance header still 'leaf 2.3.1' — pre-existing, fix in a future evidence pass)
++ NIT-2 (test-length estimate drift) accepted; reviewer's own transient scratch-file
+slip in .unlazy/ disclosed, cleaned, re-verified. Evidence churn: the four
+RETAKE_SET PNGs + MANIFEST byte-count lines only. ZERO code changes after gate
+binding. Test count 81 → 95 (+14). Committed: `665ef7a` (code+tests) + `4ea1711`
+(evidence retakes) + docs closeout. **LOCAL commits — push pending Mike's word
+(public repo); leaf-1.5's three commits are also still local.**
+
+Flagged for the v1.1 backlog: the two stream flips are now ONE-LINE endpoint edits —
+streamed batch-complete consistencyNotes (one line in handleFrame + the one-field GPS
+stream flip) and /api/scrub/execute stream + batchId (~25 lines over the same six
+helpers); MANIFEST provenance header fix rides the next evidence pass.
