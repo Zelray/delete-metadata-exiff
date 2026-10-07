@@ -429,3 +429,67 @@ DNG displays as RAW but is strip-eligible; unification is a future policy decisi
 scrub.test.ts pins the phrase REFUSAL but not the before-any-read ORDERING (pair with
 the gps sweep-failure-visibility soft spot in the next write-suite touch); the dead
 `dataDir` options on both service option types (flag-only, orphan rule).
+
+### 9.3 arch-v11 leaf 1.4 — UI: the runner is the only place a write is fired (2026-10-06, committed `4482a9c` + `43512fa`)
+
+Implemented architecture-review candidate 3 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.4" — itself a three-verifier merge of a
+4-designer round (workflow wf_6f2c8865-7cb; the card's premises were measured, not
+trusted: the modal's phrase gate was drop-in, but three honesty gaps and a
+consistencyNotes-streaming trade had to be designed around). Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.4.md`.
+
+What changed (UI-only; 16 product paths + evidence; zero server/shared/engine bytes):
+
+- **ONE fire site**: `useWriteRun.tsx` dispatches a four-arm `WriteRunPlan` — `edits`
+  (byte-identical streamed loop) / `undo` (byte-identical) / `preview` (NEW:
+  non-streamed executeWrite with the destructive envelope — the GPS arm;
+  consistencyNotes concat preserved by construction) / `scrub` (NEW: scrubExecute
+  fired INSIDE run(), compile-required `recordEdits` + `onRecorded`). The wizard's
+  confirm step, the GPS ConfirmDialog, the duplicated `GPS_CONFIRM_PHRASE` client
+  constant, and `executeGpsStrip`+`GpsStripExecuteResponse` are DEAD. A new
+  source-contract test raw-imports all five views + runner + client and fails if any
+  view ever fires a write again.
+- **The TYPED phrase is the payload**: `SaveReviewModal` `onConfirm(phrase)` →
+  `run(phrase)`; the server-minted phrase is gate display only. Server stays the
+  authority (untouched).
+- **Honesty by type, not convention**: `PreviewGroup.evidence: 'previewed'|'detected'`
+  is REQUIRED; detected groups get the re-scan caveat header INSTEAD of the exact-change
+  claim, no argv/command sections, no chunk-streaming note (chunkEstimate is
+  file-count-driven — the note was false for any non-streamed >200-file group);
+  `DetectedPreview` carries the real `report.scrubId` and can never execute generically.
+- **In-modal refusal**: destructive-arm failures render the server message verbatim
+  INSIDE the still-open dialog (the view ErrorBanner sits behind the modal overlay —
+  the occlusion trap three verifiers flagged); the preview survives a refusal, so
+  retype-and-retry re-POSTs the same previewId.
+- **GPS non-streamed BY CONTRACT**: the wire accepts stream+destructive today
+  (writes.ts:161-199) but streamed batch-complete frames omit consistencyNotes —
+  flipping is ONE field once the server frame carries them (promotion trigger,
+  recorded). GPS phrase now binds the preview envelope's server-minted phrase.
+- Declared deltas: confirm surfaces moved into the modal (gate strength
+  equal-or-stronger); GPS gate richer (diff table, blockers, backup statement, real
+  preview argv); GPS-free files count as 'no change needed' rows; wizard step indicator
+  3→2; chunk note absent from destructive gates; labels/pluralization byte-identical.
+
+Gates: ALL NINE runnable gates gate-check-bound green on final bytes (ui · ui-write ·
+write 108 · engine 243 · diagnostics · server smoke · typecheck · e2e ALL · frozen).
+Two first-pass failures, both diagnosed, neither a code defect: G3 tripped the
+routes.test.ts between-chunks cancel test once (ambient timing flake — unchanged
+server bytes, builder-green on identical bytes, sequential re-run green); G8 failed
+the manifest retake check until the orchestrator extended `RETAKEN_FRAMES` to
+`06-scrub-confirm.png` (the frame depicted the REMOVED wizard confirm step;
+`scripts/verify-e2e.mjs` + `tests-e2e/matrix.mjs` retake-contract amendment, OWNS
+amended). Senior review (G10): PASS, zero CRITICAL/HIGH/MEDIUM; LOW-1 (scrub
+`recordEdits` sourced from the detection report rather than the execute response's
+re-detection — user-invisible on the already-flagged unsafe_tag quirk path; consequence
+of the runner owning the fire) ACCEPTED and recorded; NIT-1 (evidence manifest dates
+crossed UTC midnight) informational; NIT-2 (source-contract test's textual reach)
+recorded for the v1.1 backlog. ZERO code changes after gate binding.
+
+Flagged for the v1.1 backlog (BUILD-NOTES §"Leaf 1.4 outcome"; do not smuggle): streamed
+batch-complete frames should carry consistencyNotes (unlocks the one-field GPS stream
+flip); `/api/scrub/execute` stream + batchId exposure (lets wizard presets inherit
+progress/cancel); routing scrub through a REAL frozen preview (closes the
+detection-grade gate gap the UI can only label); the source-contract test's reach; the
+two preserved Retry quirks (GPS enabled-but-inert; scrub retry re-previews through the
+plain channel → unsafe_tag).
