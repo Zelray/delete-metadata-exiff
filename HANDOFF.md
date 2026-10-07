@@ -493,3 +493,40 @@ progress/cancel); routing scrub through a REAL frozen preview (closes the
 detection-grade gate gap the UI can only label); the source-contract test's reach; the
 two preserved Retry quirks (GPS enabled-but-inert; scrub retry re-previews through the
 plain channel → unsafe_tag).
+
+### 9.4 arch-v11 leaf 1.4b — dependency pass (2026-10-06, committed `f9fac34` + `73f5f67`)
+
+Maintenance leaf (not a review card), contracted in `../.unlazy/arch-v11/BUILD-NOTES.md`
+§"Leaf 1.4b", ledger `../.unlazy/arch-v11/gates/leaf-1.4b.md`. Cleared ALL 24 Dependabot
+advisories on the public repo (5 critical / 4 high / 15 moderate → `npm audit` **0**):
+
+- **RUNTIME fix**: `@fastify/static` `^8.3.0` → `^10.1.5` (4 advisories incl. the
+  path-traversal class; registration options stable across 8→10; `fastify` ^5.12.5
+  unchanged). Embedded in the desktop bundle — G10 (`verify-desktop bundle`) proves it
+  builds, boots, serves the UI with the boot-script token injection, and stops clean.
+- **Dev toolchain**: `vitest` `^2.1.x` → `^5.0.3` (server + ui), `vite` `^5.4.21` →
+  `^8.3.3`, peer-required `@vitejs/plugin-react` `^4.4.1` → `^5.2.0`. Transitives
+  cleared: tinypool GONE from the tree, vite-node gone, `@vitest/mocker` → 5.0.3, one
+  hoisted esbuild 0.28.2 (the stale nested vite@5.4.21/esbuild@0.21.5 pair evicted by
+  one `npm dedupe`).
+- **Config migrations** (both mandatory, verified against installed package internals):
+  `poolOptions.forks.singleFork` → `maxWorkers: 1` (singleFork is entirely ABSENT from
+  vitest 5; G4 caught the silent un-pin when parallel forks raced the machine-wide
+  exiftool process count), and `esbuild.target` → `oxc.target` (vite 8 deprecates the
+  esbuild option; es2022 intent preserved). `ui/vite.config.ts` needed NOTHING — the
+  metadesk-dev handshake plugin runs byte-identical on vite 8.
+- ZERO source-file changes (ui/src, server/src, shared/src, scripts, tests-e2e logic
+  all byte-identical; review-confirmed). Diff surface: the two workspace package.jsons,
+  package-lock.json (net −503 lines), server/vitest.config.ts, evidence retakes.
+- Gates: ALL TEN runnable gates gate-check-bound green on final bytes (ui · ui-write ·
+  write 108 · engine 243 · diagnostics · server smoke incl. the static-serving proof ·
+  typecheck · e2e ALL · frozen · desktop bundle). Test counts identical to baseline.
+  Senior review (G11): PASS, zero CRITICAL/HIGH/MEDIUM; LOW-1 (root `engines`
+  `>=22.0.0` now weaker than the toolchain's real `>=22.12.0` floor — flag-only, out
+  of OWNS) recorded below; NIT-1/NIT-2 pre-existing manifest-writer behaviors.
+  Ambient-flake watch: the builder saw one uncaptured non-ok e2e line between clean
+  passes (recorded, leaf-1.2/leaf-1.4 precedent); the binder's own G8 run was clean.
+
+Flagged for the next maintenance touch (do not smuggle): root `engines` floor tighten
+to `>=22.12.0` (review LOW-1); manifest-writer header (UTC-date rollover + stale
+"leaf 2.3.1" label) fold into any future manifest touch.
