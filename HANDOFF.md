@@ -743,3 +743,69 @@ METADESK_WATCHER_DEBOUNCE_MS (same seam as KNOWN-GAP-1, dev-gate-local); the OPE
 register's two behavioral items (--stop-against-shell; live-but-unhealthy divergence)
 await an orchestrator align-or-pin decision; KNOWN-GAP-1's fix rides candidate 1's
 sanctioned config-channel design.
+
+### 9.8 arch-v11 leaf 1.8 — one exif path-key (kit); the binary one-shot deferred (candidate 8, 2026-10-08)
+
+Implemented architecture-review candidate 8 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.8" — the merge of a 4-designer round
++ 3 adversarial verifiers (workflow wf_079fdba5-1d5; 7/7 returned, ~597k subagent
+tokens; live exiftool 13.59 probes). The card was STALE IN MIKE'S FAVOR: leaf 1.1's
+reorganization had already put the entire write family on one canonical key
+(`normalizeExifPath` in results.ts), the card's fifth site ("write/helpers.ts:71")
+turned out to be a DEAD test export, and the live non-lowercasing builders are
+deliberate case-preserving echo-witnesses. Ledger:
+`../.unlazy/arch-v11/gates/leaf-1.8.md`. Baseline: main @ `ae450b7`, tree clean,
+synced; fresh same-session baselines green (write 108 · engine 243 · diagnostics ·
+typecheck · server 16 oracles).
+
+**The engine freeze HOLDS — no amendment granted.** The card's second half (folding
+the binary one-shot `runOnceBinary` from services/thumbnails.ts into the frozen
+engine's `runOnce`) is DEFERRED with recorded promotion triggers T1/T2/T3 + a
+fold-precondition (characterization goldens green against pre-fold bytes) in
+BUILD-NOTES §"Leaf 1.8" — the measured duplication showed zero live defect (safety
+posture verified identical), the fold would change two visible error strings, and
+the prospective risk (a third private spawn) is cheaper to guard by recorded trigger
+than by breaking a freeze that leaf 1.7 lifted only for reads. Also recorded, NOT
+fixed (frozen bytes): `exiftoolSession.ts:425`'s docstring FALSELY lists "binary
+extraction" as a runOnce use case — the fix rides trigger T3.
+
+What changed (11 paths, 89+/35-, zero behavior delta on production paths):
+
+- **NEW `server/src/services/exifPath.ts`** — the one dependency-free kit: single
+  export `normalizeExifPath`, body byte-identical to the old results.ts:37, docstring
+  carrying the probe-pinned semantics (exiftool echoes argv case verbatim and
+  forward-normalizes slashes everywhere; the lowercase is purely server-side
+  canonicalization on case-insensitive volumes, load-bearing exactly once —
+  recovery's journal-vs-readdir lookup) and the two deliberate non-uses (the
+  test/helpers.ts echo-witness; scan.ts's echo-match).
+- **Three private copies deleted**, every consumer re-pointed (31 production call
+  sites enumerated and verified: metadata 4 · scan 2 · recovery 4 · results 4 ·
+  writePipeline 19 · destructiveFlow 1 · scrub 1); the three write-family import
+  lines re-point; NO re-export in results.ts (one address, typecheck-tripwired).
+- **Dead test export deleted** (test/write/helpers.ts `exifSlash`, zero importers).
+- **Goldens-first, proven biting**: new `describe('normalizeExifPath')` in
+  write/results.test.ts (backslash/slash, case, UNC, `\\?\` key-not-path, CJK
+  passthrough, idempotence, exactness) + a case-swapped trackedBackup golden in
+  write/recovery.test.ts at the ONE site where the lowercase crosses two producers.
+  The builder landed goldens BEFORE rewiring (suite green at 251 with copies still
+  present), then dropped `.toLowerCase()` to watch 6 tests red, restored
+  byte-identical.
+- **Untouched by contract**: scan.ts's inline echo-match (byte-identical, moved
+  :301→:302 by the required import), test/helpers.ts:59 echo-witness, thumbnails.ts
+  entirely, pathGuard.ts, metadata RAW_EXTENSIONS (dng), write classification logic,
+  the thumbnail cache key.
+
+Gates: G1–G9 bound green on final bytes (write 116 = 108+8 goldens · engine 251 ·
+diagnostics · typecheck · server smoke · e2e roundtrip/scrub/gps · frozen check "11
+changed paths, none frozen"); G10 senior review PASS — zero CRITICAL/HIGH/MEDIUM,
+checklist a–i all CONFIRMED (independent 31-site consumer enumeration,
+`cat -A` byte-compares, 14-hunk regression census), production behavior-delta set
+EMPTY; 1 LOW + 2 NIT dispositioned record/leave in the ledger; ZERO code changes
+after gate binding. Pass 2 (--reverify) recorded in BUILD-NOTES §"Leaf 1.8" outcome.
+
+Flagged for the v1.1 backlog (do not smuggle): scan.ts:295-302 is exercised by NO
+test (a pin needs a fakeEngine stub in the read suites — new harness machinery); a
+real CJK-thumbnail limitation pin needs an argfile fixture writer; a one-line
+pin-carrier comment on the recovery golden's trackedSha256 assertion (review LOW-1);
+the runOnceBinary fold + the exiftoolSession.ts:425 docstring fix ride triggers
+T1/T2/T3.
