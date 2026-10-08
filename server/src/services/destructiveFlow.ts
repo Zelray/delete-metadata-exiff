@@ -21,7 +21,7 @@
 import { buildJsonReadArgs } from '../engine/argBuilder.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import type { Journal } from './journal.js';
-import { normalizeExifPath } from './results.js';
+import { normalizeExifPath } from './exifPath.js';
 
 /**
  * RAW extensions excluded from the destructive channel: RAW is limited to an

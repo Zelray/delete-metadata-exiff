@@ -67,11 +67,6 @@ export async function makePipeline(
   };
 }
 
-/** exiftool's normalized SourceFile form for map lookups. */
-export function exifSlash(p: string): string {
-  return p.replace(/\\/g, '/');
-}
-
 /**
  * Independent single-process read of one file's tags (fresh exiftool run,
  * driven through the documented `-@ -` stdin argfile protocol — the same

@@ -21,6 +21,7 @@ import type {
 import { buildJsonReadArgs } from '../engine/argBuilder.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { lookupTag } from '../engine/tagDatabase.js';
+import { normalizeExifPath } from './exifPath.js';
 
 /** Files per engine round trip. */
 const BATCH_SIZE = 100;
@@ -117,13 +118,13 @@ export class MetadataService {
     const rawByPath = indexByPath(rawValues);
 
     for (const requestedPath of paths) {
-      const source = convertedByPath.get(exifSlash(requestedPath)) ?? {};
-      const rawDoc = rawByPath.get(exifSlash(requestedPath));
+      const source = convertedByPath.get(normalizeExifPath(requestedPath)) ?? {};
+      const rawDoc = rawByPath.get(normalizeExifPath(requestedPath));
       const warnings: string[] = [];
       const errors: string[] = [];
       collectDiagnostics(source, warnings, errors);
       if (rawDoc !== undefined) collectDiagnostics(rawDoc, warnings, errors);
-      if (convertedByPath.get(exifSlash(requestedPath)) === undefined) {
+      if (convertedByPath.get(normalizeExifPath(requestedPath)) === undefined) {
         errors.push('exiftool returned no data for this file');
       }
 
@@ -163,13 +164,9 @@ function indexByPath(docs: readonly JsonDoc[]): Map<string, JsonDoc> {
   const map = new Map<string, JsonDoc>();
   for (const doc of docs) {
     const source = doc['SourceFile'];
-    if (typeof source === 'string') map.set(exifSlash(source), doc);
+    if (typeof source === 'string') map.set(normalizeExifPath(source), doc);
   }
   return map;
-}
-
-function exifSlash(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase();
 }
 
 function collectDiagnostics(doc: JsonDoc, warnings: string[], errors: string[]): void {

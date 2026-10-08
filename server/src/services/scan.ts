@@ -18,6 +18,7 @@ import { open, readdir, stat, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import type { FileEntry, FileKind, FolderScanRequest, FolderScanResult } from '@metadesk/shared';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
+import { normalizeExifPath } from './exifPath.js';
 import { inspectPath, isUncPath, probeReadable } from './pathGuard.js';
 
 /** Extension chips (per -listf families). Lowercase, no dot. */
@@ -307,9 +308,9 @@ async function applyBadges(batch: FileEntry[], engine: ExifToolSession): Promise
     return;
   }
 
-  const byPath = new Map(json.map((obj) => [exifSlash(String(obj['SourceFile'] ?? '')), obj]));
+  const byPath = new Map(json.map((obj) => [normalizeExifPath(String(obj['SourceFile'] ?? '')), obj]));
   for (const entry of batch) {
-    const payload = byPath.get(exifSlash(entry.path));
+    const payload = byPath.get(normalizeExifPath(entry.path));
     if (payload === undefined) continue;
     if (hasTag(payload, 'GPSLatitude') || hasTag(payload, 'GPSLongitude')) {
       entry.warnings.push('badge:gps-present');
@@ -342,10 +343,6 @@ function hasTag(payload: Record<string, unknown>, bareName: string): boolean {
     }
   }
   return false;
-}
-
-function exifSlash(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase();
 }
 
 function newScanId(): string {

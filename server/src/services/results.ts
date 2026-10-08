@@ -19,6 +19,7 @@
  * folded into a green summary.
  */
 import { readFile } from 'node:fs/promises';
+import { normalizeExifPath } from './exifPath.js';
 
 export interface SummaryCounts {
   directoriesScanned: number;
@@ -30,11 +31,6 @@ export interface SummaryCounts {
   notUpdatedDueToErrors: number;
   notCreatedDueToErrors: number;
   filesCouldNotBeRead: number;
-}
-
-/** Normalize for manifest/path comparison: exiftool reports forward slashes. */
-export function normalizeExifPath(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase();
 }
 
 const SUMMARY_PATTERNS: ReadonlyArray<[keyof SummaryCounts, RegExp]> = [

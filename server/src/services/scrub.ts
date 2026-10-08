@@ -37,7 +37,7 @@ import type { ScrubScope, TagEdit } from '@metadesk/shared';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { RAW_EXTENSIONS, readAllTierByPath, writeDestructiveExport } from './destructiveFlow.js';
 import { newRecordId } from './journal.js';
-import { normalizeExifPath } from './results.js';
+import { normalizeExifPath } from './exifPath.js';
 import { matchesTagKey, WritePipeline, WritePipelineError, type ExecuteResult } from './writePipeline.js';
 
 /** The phrase the user must type to run a scrub. Stable and documented. */

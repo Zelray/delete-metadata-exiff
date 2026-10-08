@@ -36,6 +36,7 @@ import {
   type ResultRecord,
 } from './journal.js';
 import { isPidAlive, WriteLock } from './lock.js';
+import { normalizeExifPath } from './exifPath.js';
 
 export class RecoveryError extends Error {
   readonly code: 'confirmation_required' | 'not_found' | 'unsafe' | 'writer_active' | 'bad_request';
@@ -165,7 +166,7 @@ export class RecoveryService {
           const pair: OriginalPair = {
             backupPath,
             photoPath,
-            trackedSha256: trackedBackups.get(normalize(backupPath)) ?? null,
+            trackedSha256: trackedBackups.get(normalizeExifPath(backupPath)) ?? null,
           };
           if (!nameSet.has(photoName)) {
             originalsWithoutPhoto.push(pair);
@@ -455,9 +456,9 @@ export class RecoveryService {
       const { records } = await this.journal.readBatch(batchId);
       for (const record of records) {
         if (record.kind === 'result' && record.outcome.backup !== undefined) {
-          map.set(normalize(record.outcome.backup.path), record.outcome.backup.sha256);
+          map.set(normalizeExifPath(record.outcome.backup.path), record.outcome.backup.sha256);
         } else if (record.kind === 'adopt') {
-          map.set(normalize(record.backup.path), record.backup.sha256);
+          map.set(normalizeExifPath(record.backup.path), record.backup.sha256);
         }
       }
     }
@@ -466,7 +467,7 @@ export class RecoveryService {
 
   private async findTrackedBackupHash(backupPath: string): Promise<string | null> {
     const map = await this.collectTrackedBackups();
-    return map.get(normalize(backupPath)) ?? null;
+    return map.get(normalizeExifPath(backupPath)) ?? null;
   }
 }
 
@@ -495,8 +496,4 @@ async function readdirSafe(folder: string): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-function normalize(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase();
 }

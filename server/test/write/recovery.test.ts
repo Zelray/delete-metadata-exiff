@@ -35,6 +35,11 @@ async function putPhoto(name: string, bytes: Buffer = PNG_1X1): Promise<string> 
   return full;
 }
 
+/** Flip the case of every ASCII letter — the same folder on a case-insensitive volume. */
+function caseSwapped(p: string): string {
+  return p.replace(/[a-z]/gi, (c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()));
+}
+
 describe('orphan temp files', () => {
   it('are found by the scan and deleted only with confirmation and no active writer', async () => {
     const photo = await putPhoto('orphan-target.png');
@@ -220,6 +225,36 @@ describe('nuclear restore (restore-originals-for-batch)', () => {
 
     // Byte-identical to the original fixture, and clean of the edit.
     expect(await sha256File(photo)).toBe(createHash('sha256').update(PNG_1X1).digest('hex'));
+  });
+});
+
+describe('case-swapped journal cross-check', () => {
+  it('still matches journal-recorded backups when the scan spells the folder with different case', async () => {
+    // The journal records the backup under photosDir()'s own spelling (a real
+    // pipeline write); the scan below passes a case-flipped spelling of the
+    // same folder. The two producers only agree because both sides fold to
+    // the lowercase forward-slash key (recovery.ts trackedBackup map vs the
+    // readdir scan) — the one load-bearing lowercase in the path family.
+    const photo = await putPhoto('casing.png');
+    const env = await harness.pipeline.preview({
+      files: [photo],
+      edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'casing witness' }],
+    });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    expect(res.outcome.files[0]?.status).toBe('updated');
+
+    // Remove the live photo so the backup surfaces as an original-without-
+    // photo — the only report row that carries a trackedSha256 to observe.
+    await rm(photo, { force: true });
+
+    const report = await recovery.scan([caseSwapped(photosDir())]);
+    const folder = report.folders[0];
+    const pair = folder?.originalsWithoutPhoto.find(
+      (p) => path.basename(p.backupPath) === 'casing.png_original',
+    );
+    expect(pair).toBeDefined();
+    expect(pair?.trackedSha256).not.toBeNull();
+    expect(folder?.untrackedOriginals).toEqual([]);
   });
 });
 

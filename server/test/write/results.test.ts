@@ -12,6 +12,7 @@ import {
   retryList,
   summarizeConsistency,
 } from '../../src/services/results.js';
+import { normalizeExifPath } from '../../src/services/exifPath.js';
 
 describe('parseSummary', () => {
   it('parses the engine summary line set (padded counts, stdout or stderr)', () => {
@@ -135,5 +136,41 @@ describe('retryList', () => {
       { filePath: 'e', status: 'failed', stage: 'verify' },
     ]);
     expect(retry).toEqual(['c', 'e']);
+  });
+});
+
+describe('normalizeExifPath', () => {
+  it('folds backslashes to forward slashes', () => {
+    expect(normalizeExifPath('C:\\pics\\a.png')).toBe('c:/pics/a.png');
+  });
+
+  it('lowers ASCII case', () => {
+    expect(normalizeExifPath('C:/PICS/A.PNG')).toBe('c:/pics/a.png');
+  });
+
+  it('normalizes a UNC spelling to a leading double slash', () => {
+    expect(normalizeExifPath('\\\\srv\\share\\X.JPG')).toBe('//srv/share/x.jpg');
+  });
+
+  it('keys the \\\\?\\ device form as a key, not a usable path', () => {
+    // The key mangles the extended-length prefix on purpose: this value is
+    // for map lookups only — never a path handed to the fs or the engine.
+    expect(normalizeExifPath('\\\\?\\C:\\pics\\a.PNG')).toBe('//?/c:/pics/a.png');
+  });
+
+  it('passes CJK filenames through unchanged beyond case and slashes', () => {
+    expect(normalizeExifPath('C:\\照片\\照片.PNG')).toBe('c:/照片/照片.png');
+  });
+
+  it('is idempotent', () => {
+    const once = normalizeExifPath('C:\\PICS\\照片.PNG');
+    expect(normalizeExifPath(once)).toBe(once);
+  });
+
+  it('does not over-normalize (no Unicode NFC, no trimming, no short-name resolution)', () => {
+    const nfdName = 'cafe\u0301'; // NFD spelling of "café" — stays decomposed
+    expect(normalizeExifPath(`C:\\pics\\${nfdName}.PNG`)).toBe(`c:/pics/${nfdName}.png`);
+    expect(normalizeExifPath('  C:/pics/a.PNG  ')).toBe('  c:/pics/a.png  ');
+    expect(normalizeExifPath('C:\\PICS\\RUNNER~1.PNG')).toBe('c:/pics/runner~1.png');
   });
 });

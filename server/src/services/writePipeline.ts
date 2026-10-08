@@ -58,9 +58,9 @@ import { assertArgsSafe } from '../engine/engineArgs.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { newRecordId, sha256File, Journal, type BatchStartRecord } from './journal.js';
 import { findForeignTempFiles, WriteLock } from './lock.js';
+import { normalizeExifPath } from './exifPath.js';
 import {
   classifyFiles,
-  normalizeExifPath,
   parseSummary,
   readManifest,
   retryList,
