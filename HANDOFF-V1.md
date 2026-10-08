@@ -101,6 +101,13 @@ channel). The server is an esbuild ESM single-file bundle (D1 — ESM is mandato
 Close-to-exit is measured ≈1 s because the shell navigates the webview to `about:blank`
 before pulling the stop channel (the SSE mitigation below).
 
+**The tabulated lifecycle contract** (arch-v11 leaf 1.7, 2026-10-07): the schemas,
+timing windows, stop channel, env sets, and the DELIBERATE asymmetries between this
+ladder and the dev launcher's are pinned in `docs/lifecycle-contract.md` and
+cross-checked by `scripts/verify-lifecycle-contract.mjs` — change the shell and the
+contract in the same commit, or that gate fails. This ladder and HANDOFF §2 remain the
+narrative contracts of record; the tabulated file may not contradict them.
+
 ## 3. How to build + verify EVERYTHING
 
 Run from the repo root (`MetaProject/`) unless noted. Each gate prints its marker as the

@@ -61,12 +61,24 @@ actives: leaf 1.1.4b owns `server/src/services/{writePipeline,gpsStrip}.ts`,
 pair (`metadesk.ps1`/`.cmd`: straight launch). Node built-ins only; every child process
 is spawned with an argv array.
 
+**The tabulated contract for these facts** — file schemas with writer/reader/deleter
+rights, every timing constant per adapter (the 45 s vs 20 s and 20 s vs 5 s pairs are
+deliberate, never "harmonize" them), the stop channel, the env read/strip sets, and the
+accepted asymmetries — is `docs/lifecycle-contract.md` (arch-v11 leaf 1.7), cross-checked
+by `scripts/verify-lifecycle-contract.mjs` (static, fail-closed; a source change without
+a same-commit contract edit fails the gate). This section is the narrative; the contract
+is the pinned table; neither may contradict the other.
+
 1. **Single-instance**: `data/instance.lock` records `{launcherPid, serverPid, port,
-   startedAt, dataDir}`. A second launch sees a live `launcherPid` (or a live,
+   startedAt, dataDir}` (`port` is the REQUESTED port — null on every default free-port
+   launch; `serverPid` is rewritten to `portfile.pid` after the handshake, metadesk.mjs
+   `markServerPid`). A second launch sees a live `launcherPid` (or a live,
    health-answering portfile) and does NOT start a second server — it waits briefly for
    the portfile, opens the running URL in the browser, exits 0. A lock whose pid is dead
    is stale and removed. Liveness = `process.kill(pid, 0)` (EPERM counts as alive).
-2. **Free port**: bind `127.0.0.1:0`, read the port, close (or `--port N` / `METADESK_PORT`).
+2. **Free port**: bind `127.0.0.1:0`, read the port, close (or `--port N` — the launcher
+   itself reads NO env knob; `METADESK_PORT` is a server-side default that the launcher's
+   `--port` argv always overrides).
 3. **Server start**: `spawn(process.execPath, [tsx, server/src/index.ts, '--port', N])`
    with `stdio: ['pipe','pipe','pipe']` and `METADESK_DATA_DIR` forwarded. The launcher
    never writes the portfile — the server owns it (`{port, token, pid, startedAt, engine,
@@ -132,6 +144,7 @@ gate checks; agents run them locally before claiming done.
 | `node app/scripts/verify-write.mjs` | `write pipeline verification passed` | Write suite: preview/execute/verify, journal, lock, recovery, results, scrub. |
 | `node app/scripts/verify-ui-write.mjs` | `ui write surfaces verification passed` | UI write-surface tests + strict build. |
 | `node app/scripts/verify-launch.mjs` | `launcher verification passed` | Drives `bin/metadesk.mjs` end to end with a temp `METADESK_DATA_DIR`: boot+portfile, instance lock, health, served UI with token, second-launch focus (no second server), `--stop` from a separate process, launcher exit 0, pid gone, zero residue, node+exiftool counts back to baseline. |
+| `node app/scripts/verify-lifecycle-contract.mjs` | `lifecycle contract verification passed` | arch-v11 leaf 1.7: static contract↔code agreement for the lifecycle seam — file schemas (writer/reader/deleter per field), every pinned timing constant, stop-channel anchors (incl. the textual about:blank→SOCKET_SETTLE order), env read/strip sets, backstop + sweep-guard asymmetries. Reads `docs/lifecycle-contract.md` as the expectation source; fail-closed anchors; <100 ms; spawns NOTHING and counts NO processes — safe in any ladder slot (keep the one-at-a-time convention anyway). A source change without a same-commit contract edit fails here, not at release. |
 | `npm test` (from `app/` or `app/server/`) | vitest summary | The server test suite (same one verify-engine runs). |
 
 Cautions (pinned in BUILD-NOTES "Test seams" and proven here):
@@ -663,3 +676,70 @@ Flagged for the v1.1 backlog: the two stream flips are now ONE-LINE endpoint edi
 streamed batch-complete consistencyNotes (one line in handleFrame + the one-field GPS
 stream flip) and /api/scrub/execute stream + batchId (~25 lines over the same six
 helpers); MANIFEST provenance header fix rides the next evidence pass.
+
+### 9.7 arch-v11 leaf 1.7 — the launcher ↔ shell lifecycle contract, explicit (2026-10-07, committed `6be166b` + docs)
+
+Implemented architecture-review candidate 7 per the SYNTHESIZED contract in
+`../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.7" — a three-verifier merge of a
+4-designer round (workflow wf_971c6e44-7af; 7/7 returned; the card's numbers all
+verified true, but its solution sentence was amended: "assert both implementations
+agree" is unbuildable because the adapters DELIBERATELY disagree on health deadline,
+grace, env policy, handshake order, kill policy and single-instance mechanism — the
+buildable gate asserts EACH side against its OWN contract row, never adapter-vs-
+adapter). Ledger: `../.unlazy/arch-v11/gates/leaf-1.7.md`. Baseline: main @ `1ac8ad1`,
+tree clean. **The tauri freeze lifted for READS ONLY** (orchestrator amendment) —
+measurement found ZERO product edits needed, and the deliverable is exactly two NEW
+files with every existing file byte-identical (frozen check bound twice).
+
+What changed (nothing existing; two new files):
+
+- **`docs/lifecycle-contract.md`** — the tri-party (server / node launcher / Tauri
+  shell) lifecycle agreement: authority-defer header + the same-commit change
+  protocol (§0) with the fenced JSON pin table the gate parses (§0.1); the
+  writer/reader/DELETER matrix for portfile.json / instance.lock / stop.request (§1 —
+  the server is the portfile's sole writer; the shell writes NOTHING and honors only
+  `launcherPid`; stop.request is launcher-internal with zero Rust/server references;
+  instance.lock has two deleters); the stdin stop channel incl. the tsx-hop
+  pid-of-record rule and the about:blank→SOCKET_SETTLE ordering (§2); every timing
+  constant per adapter with its failure-budget why, headed "these pairs are NOT meant
+  to converge" (§3); kill rules & backstops (§4); seven accepted asymmetries, each
+  "change requires an orchestrator decision" (§5); KNOWN-GAP-1 verbatim — the server
+  reads SIX METADESK_* knobs, the shell strips FOUR, METADESK_WATCHER_DEBOUNCE_MS
+  leaks into the packaged engine (§6, owner = candidate 1's config-channel design);
+  the OPEN register (§7 — the --stop-against-shell chain; the live-but-unhealthy
+  portfile divergence; the §2 prose corrections now applied); the fact→oracle table
+  with SAFETY/OPERATIONAL class + proof status (§8); gate-local-budgets note (§9).
+- **`scripts/verify-lifecycle-contract.mjs`** — the static cross-check gate
+  (§3 table above): C1–C8 families, exact non-empty reader sets across all three
+  launcher read aliases, process.env-anchored env extraction, comment-stripped
+  matching (except C4's contracted zero-reference scan), textual-order pins (never
+  line numbers), fail-closed `contract anchor moved` failures. Under 100 ms; spawns
+  nothing; counts no processes.
+- **§2 corrections applied at closeout** (the reviewer re-confirmed both defects):
+  the free-port line no longer claims the launcher honors `METADESK_PORT` (it reads
+  only `--port`; the env var is a server-side default the argv always overrides), and
+  the instance.lock line now carries the null-requested-port caveat + the
+  `markServerPid` rewrite fact.
+
+Gates: G1–G6 DOUBLE-BOUND green on final bytes (orchestrator pass 1 bound; pass 2
+reverified all six, zero flakes): frozen check (zero existing-file edits) ·
+verify-lifecycle-contract · the falsifiability battery (four mutation classes RED
+naming their rows; the no-op control GREEN; every byte restored — recorded) ·
+verify-launch · verify-desktop shell · verify-desktop matrix. Senior review (G7):
+PASS, zero CRITICAL/HIGH/MEDIUM; 6 LOW + 3 NIT dispositioned in the ledger (C8's
+slice-global pairing, C4's comment sensitivity, reflow sensitivity, comment wording,
+§1 owned-only wording, walkFiles swallow; NITs: §3 inline beats, first-serde-rename
+assumption, per-row citations) — all v1.1 backlog or docs riders, ZERO code changes
+after gate binding. Builder disclosures recorded: G1 initially RED through an
+orchestrator-script repo-root assumption (fixed by the orchestrator); the builder's
+own first-run alias-interpolation bug self-caught and fixed pre-binding. Committed:
+`6be166b` (the two files) + docs closeout. **Pushed with the leaf-1.5/1.6 locals on
+Mike's word, 2026-10-07.**
+
+Flagged for the v1.1 backlog (do not smuggle): per-kill-site C8 pairing;
+walkFiles named-failure conversion; C4 comment-semantics decision; §1 owned-only
+wording + §3 inline beats (docs riders); verify-launch.mjs:114 cleanEnv misses
+METADESK_WATCHER_DEBOUNCE_MS (same seam as KNOWN-GAP-1, dev-gate-local); the OPEN
+register's two behavioral items (--stop-against-shell; live-but-unhealthy divergence)
+await an orchestrator align-or-pin decision; KNOWN-GAP-1's fix rides candidate 1's
+sanctioned config-channel design.
