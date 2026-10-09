@@ -809,3 +809,88 @@ real CJK-thumbnail limitation pin needs an argfile fixture writer; a one-line
 pin-carrier comment on the recovery golden's trackedSha256 assertion (review LOW-1);
 the runOnceBinary fold + the exiftoolSession.ts:425 docstring fix ride triggers
 T1/T2/T3.
+
+### 9.9 arch-v11 leaf 1.9 — candidate 9: the selector DEFERRED with triggers; the honesty rider (2026-10-09, committed `a10631c` + docs — THE LAST CARD; series COMPLETE)
+
+The final card of Mike's ordered architecture-review series. Per the pre-agreed
+shape, the measure-first design round ran anyway (workflow wf_db911b5e-1d9: 4
+designers — unification-maximalist, anti-design skeptic, semantics/safety deep-dive,
+module-graph architect — then 3 adversarial verifiers: behavior-identity,
+anti-overbuild, test-reality; 7/7 returned, ~686k subagent tokens, ~31 min, waves
+≤ 3). **UNANIMOUS DEFER**: the card's headline premise ("truncation wording and
+honest caps differ per surface") is vacuous — exactly ONE truncation exists app-wide
+(ScrubWizard) plus one refusal (BatchPanel date-shift); the only real duplication is
+a ~4-line name predicate ×3; every other divergence is DELIBERATE per-surface and
+self-labeled in product copy ("as scanned" vs "(seen this session)"; refuse-at-200
+vs server-mirrored pre-clip-at-1000; display sort vs walk order); the card's caller
+list is wrong in both directions (EditPanel is an omitted deliberate selection-only
+consumer; FileGrid is a selection PRODUCER whose display set is not store-derivable
+— badgeFilter/sortKey are FileGrid-local useState); and the prospective fourth
+consumer (CSV/JSON bulk) exists as a NAME only — no shape, no PLAN row anywhere.
+Binding: `../.unlazy/arch-v11/BUILD-NOTES.md` §"Leaf 1.9" — the DEFER with
+promotion triggers **T1** (the v1.1 CSV/JSON bulk leaf operates on store-derived
+scope, not an imported path list) / **T2** (a third store-derived scope consumer
+appears), plus the FULL deferred design sketch (ui/src/state/selection.ts, exact
+signature, two migration callers, EditPanel never converts) so the trigger leaf is
+assembly, not design. Ledger: `../.unlazy/arch-v11/gates/leaf-1.9.md`. Baseline:
+main @ `dcca836`, tree clean, synced; fresh same-session verify-ui + verify-ui-write
+baselines green; server layers cited from leaf-1.8's bound ladder (2026-10-08).
+
+What shipped instead — the measured honesty rider (UI-only; 11 paths: 5 modified
++ 1 NEW test + 5 evidence retakes; three declared user-visible deltas, NOTHING
+else):
+
+- **ScrubWizard truncation truth**: the flag at :53-55 now compares the
+  name-FILTERED scope (hoisted `filteredPaths` memo — the :46 predicate MOVED, not
+  copied; deps verified pure) against MAX_SCRUB_FILES; previously it read the
+  UNFILTERED `scanResult.entries.length`, so a 1500-file folder filtered to 500
+  rendered "The server scans at most 1000 files per pass — narrow the selection or
+  the filter…" directly above "Scans 500 files". Provably one-directional (filtered
+  ⊆ entries): it could only over-warn, never silence a real warning. Banner wording
+  byte-identical.
+- **Six count strings → toLocaleString**: BatchPanel :141 (both arms)/:197/:223/
+  :338, EditPanel :49/:105 — pre-fix, "Current selection (1024)" rendered beside
+  "All filtered files (1,024)" in the same widget. Counts only; pluralization and
+  wording byte-identical; review titles stay raw (pinned convention,
+  write.surfaces.test.tsx).
+- **FileGrid sort honesty**: option label 'Date (oldest first)' → 'Modified (oldest
+  first)' (the comparator always sorted `modifiedAt`; FileEntry carries no capture
+  date) + the :82-84 comment rewritten to the truth; comparator body and the
+  'dateTaken' key byte-identical.
+- **New pins** (goldens-first PROVEN: 5 RED / 1 GREEN on pre-fix bytes — P1 banner-
+  absence, P3 format ×3, P4 label red on dcca836; P2 banner-presence green on HEAD):
+  `ui/src/views/scope-honesty.test.tsx` (NEW); `write.surfaces.test.tsx` extended
+  with the **fourth-copy alarm** (per-file occurrence map of
+  `name.toLowerCase().includes(` — BatchPanel/ScrubWizard/FileGrid 1, DetailViewer 1
+  tag-row filter, all other views 0; any addition/removal reds with the promotion
+  trigger named) and the **MAX_SCRUB_FILES echo pin** (UI :14 ↔ frozen
+  routes/writes.ts :58, ?raw read-only, zero new deps).
+
+Gates: G1–G4 bound green on final bytes (verify-ui · verify-ui-write incl. the new
+pins · verify-e2e ALL incl. the Playwright visual matrix · frozen check "11 changed
+paths, none frozen"); **pass 2 (--reverify) re-ran all four on the same bytes —
+green, zero flakes** (G3 reproduced identical markers with a fresh output hash, as
+expected for timing-sensitive suites). Senior review (G5): PASS, zero
+CRITICAL/HIGH/MEDIUM; checklist a–i all CONFIRMED (independent predicate census,
+memo-deps purity trace, ISO-8601 lexicographic==chronological verification,
+MANIFEST restamp audit, `diff --stat` == `diff -w --stat` + `git diff --check`
+clean); production behavior-delta set EXACTLY the three declared; 3 NIT
+dispositioned record/leave (hoisted-memo eager compute — binding-sanctioned; P5
+basename-merge pathological shape; red-run React-root hygiene) + 1 pre-existing
+observation (MANIFEST header label). One contract deviation, adjudicated ACCEPTED:
+the binding's literal P5 pin was mis-authored (DetailViewer's tag-row filter); the
+shipped occurrence map is strictly stronger. ZERO code changes after gate binding.
+Committed `a10631c` (code 11 files, 468+/22-) + docs commit; PUSHED on Mike's word
+2026-10-09.
+
+Flagged for the v1.1 backlog (BUILD-NOTES §"Leaf 1.9" + `../HANDOFF-ARCH-V11-COMPLETE.md`
+§3; do not smuggle): writePipeline.ts:78's false "the UI paginates above this"
+comment (server-frozen this leaf); true capture-date sort (needs a session metadata
+cache); the 'filtered' term reconciliation (three mirrors move together:
+HelpOverlay.tsx:66 + resources/help/metadesk-help.md:95-96 + tests-e2e/matrix.mjs:614);
+the BatchPanel :71 O(n²) entries.find (rides the trigger-time selector build);
+preview-store eviction constraint for any grouping work; and the FOUR PRODUCT
+questions for Mike (scrub scope radio vs implicit fallback; badge-source
+convergence; what "All filtered files" should mean; capture-date sorting as a
+feature). **The arch-v11 series is COMPLETE — next work is the v1.1 feature
+backlog on Mike's priorities.**
