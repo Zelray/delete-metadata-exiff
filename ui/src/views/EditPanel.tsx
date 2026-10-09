@@ -46,7 +46,7 @@ export function EditPanel() {
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">Edit</h1>
         <Badge tone="accent">
-          {selectedPaths.length} file{selectedPaths.length === 1 ? '' : 's'} selected
+          {selectedPaths.length.toLocaleString()} file{selectedPaths.length === 1 ? '' : 's'} selected
         </Badge>
       </header>
 
@@ -102,7 +102,7 @@ function EditSelection({
             label:
               selectedPaths.length === 1
                 ? basename(selectedPaths[0] ?? '')
-                : `${selectedPaths.length} files`,
+                : `${selectedPaths.length.toLocaleString()} files`,
             evidence: 'previewed',
             preview: envelope.preview,
             commandPreview: envelope.commandPreview,

@@ -79,8 +79,9 @@ export function FileGrid({ onOpenDetail }: { onOpenDetail: (path: string) => voi
         case 'size':
           return b.sizeBytes - a.sizeBytes;
         case 'dateTaken':
-          // Capture-date order uses metadata already read this session; files
-          // not yet inspected fall back to their modified time.
+          // Sorts by file modified time, oldest first. True capture-date
+          // ordering is NOT implemented — FileEntry carries no capture date
+          // and there is no session metadata cache yet (v1.1 backlog rider).
           return a.modifiedAt.localeCompare(b.modifiedAt);
       }
     });
@@ -184,7 +185,7 @@ export function FileGrid({ onOpenDetail }: { onOpenDetail: (path: string) => voi
             aria-label="Sort files"
           >
             <option value="name">Name</option>
-            <option value="dateTaken">Date (oldest first)</option>
+            <option value="dateTaken">Modified (oldest first)</option>
             <option value="type">Type</option>
             <option value="size">Size (largest first)</option>
           </select>

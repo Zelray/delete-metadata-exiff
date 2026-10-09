@@ -26,9 +26,15 @@ import resultsReportSource from '../views/ResultsReport.tsx?raw';
 // @ts-expect-error — TS2307: raw imports of relative paths are untyped
 import historyViewSource from '../views/HistoryView.tsx?raw';
 // @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import fileGridSource from '../views/FileGrid.tsx?raw';
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
 import useWriteRunSource from './useWriteRun.tsx?raw';
 // @ts-expect-error — TS2307: raw imports of relative paths are untyped
 import clientSource from '../api/client.ts?raw';
+// The frozen server route, read as text for the cross-tree echo pin — a
+// read-only ?raw import of a file OUTSIDE the ui tree (P6).
+// @ts-expect-error — TS2307: raw imports of relative paths are untyped
+import writesRouteSource from '../../../server/src/routes/writes.ts?raw';
 import { SaveReviewModal, type PreviewGroup } from '../components/SaveReviewModal';
 import { EditPanel } from '../views/EditPanel';
 import { ResultsReport } from '../views/ResultsReport';
@@ -1044,6 +1050,64 @@ describe('write-firing source contract', () => {
     for (const [, source] of viewSources) {
       expect(source).not.toContain('executeGpsStrip');
     }
+  });
+});
+
+// ---- scope-honesty source pins (leaf 1.9) ---------------------------------------------
+
+describe('scope-honesty source pins (leaf 1.9)', () => {
+  const NAME_PREDICATE = 'name.toLowerCase().includes(';
+  type RawGlobMeta = {
+    glob: (
+      pattern: string,
+      options: { query: '?raw'; import: 'default'; eager: true },
+    ) => Record<string, string>;
+  };
+  // EVERY view source under ui/src/views/** (components AND test files), as
+  // text — the scan must reach files this suite never imports, because the
+  // next fourth copy is most likely to arrive in a brand-new file.
+  const viewDirSources: Record<string, string> = (import.meta as unknown as RawGlobMeta).glob(
+    '../views/**/*.tsx',
+    { query: '?raw', import: 'default', eager: true },
+  );
+
+  it('the case-insensitive name predicate keeps exactly its known copies (fourth-copy alarm)', () => {
+    // The three file-scope copies — the duplication census of record — plus
+    // DetailViewer.tsx's single TAG-ROW filter, which the contract of record
+    // measured and EXCLUDED from that census (BUILD-NOTES leaf-1.9 premise P2:
+    // it filters tag rows, not file scope). Pinned at exactly one occurrence
+    // so it can neither gain a copy nor silently change.
+    const knownCopies: Record<string, number> = {
+      'BatchPanel.tsx': 1,
+      'ScrubWizard.tsx': 1,
+      'FileGrid.tsx': 1,
+      'DetailViewer.tsx': 1,
+    };
+    // Belt: FileGrid's copy is pinned independent of the glob below.
+    expect((fileGridSource as string).split(NAME_PREDICATE).length - 1).toBe(1);
+
+    const counts: Record<string, number> = {};
+    for (const [file, source] of Object.entries(viewDirSources)) {
+      const name = file.slice(file.lastIndexOf('/') + 1);
+      counts[name] = (counts[name] ?? 0) + source.split(NAME_PREDICATE).length - 1;
+    }
+    // The scan must actually cover views/ — a vacuous glob would pass silently.
+    for (const name of ['BatchPanel.tsx', 'ScrubWizard.tsx', 'FileGrid.tsx', 'DetailViewer.tsx']) {
+      expect(Object.keys(counts), `the glob must cover views/${name}`).toContain(name);
+    }
+    for (const [name, count] of Object.entries(counts)) {
+      expect(
+        count,
+        `${name} holds ${count} copy(ies) of the name predicate — a FOURTH file-scope copy is the deferred selector's promotion trigger (BUILD-NOTES leaf-1.9 "WAIVER + promotion triggers")`,
+      ).toBe(knownCopies[name] ?? 0);
+    }
+  });
+
+  it('MAX_SCRUB_FILES = 1000 stays echoed verbatim in the wizard and the frozen server route', () => {
+    expect(scrubWizardSource as string).toContain('const MAX_SCRUB_FILES = 1000');
+    // Read-only cross-tree echo: the server constant is the authority the
+    // wizard's pre-clip mirrors (writes.ts 400s above it).
+    expect(writesRouteSource as string).toContain('const MAX_SCRUB_FILES = 1000');
   });
 });
 

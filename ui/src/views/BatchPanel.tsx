@@ -138,7 +138,10 @@ export function BatchPanel() {
         }
       } else if (fieldEdits.length > 0) {
         groups.push({
-          label: scope === 'selection' ? `${inScope.length} selected file(s)` : `${inScope.length} filtered file(s)`,
+          label:
+            scope === 'selection'
+              ? `${inScope.length.toLocaleString()} selected file(s)`
+              : `${inScope.length.toLocaleString()} filtered file(s)`,
           files: inScope,
           edits: fieldEdits,
         });
@@ -194,7 +197,7 @@ export function BatchPanel() {
           {inScope.length.toLocaleString()} in scope
         </Badge>
         {scope === 'selection' && selectedPaths.length > 0 && (
-          <Badge tone="neutral">{selectedPaths.length} selected</Badge>
+          <Badge tone="neutral">{selectedPaths.length.toLocaleString()} selected</Badge>
         )}
       </header>
 
@@ -220,7 +223,7 @@ export function BatchPanel() {
               onChange={() => setScope('selection')}
               disabled={selectedPaths.length === 0}
             />
-            Current selection ({selectedPaths.length})
+            Current selection ({selectedPaths.length.toLocaleString()})
           </label>
           <label className="flex items-center gap-1.5">
             <input
@@ -335,7 +338,7 @@ export function BatchPanel() {
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5">
         <span className="text-sm font-medium">
           {hasWork
-            ? `${inScope.length} file${inScope.length === 1 ? '' : 's'} will be previewed.`
+            ? `${inScope.length.toLocaleString()} file${inScope.length === 1 ? '' : 's'} will be previewed.`
             : 'Stage field changes or a date shift to begin.'}
         </span>
         <Button

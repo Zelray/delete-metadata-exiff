@@ -37,19 +37,22 @@ export function ScrubWizard() {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
+  /** The name-filtered folder paths BEFORE the server-cap slice — the
+   * truncation flag below compares this length against MAX_SCRUB_FILES. */
+  const filteredPaths = useMemo(() => {
+    return (scanResult?.entries ?? [])
+      .filter((entry) => searchText.trim() === '' || entry.name.toLowerCase().includes(searchText.trim().toLowerCase()))
+      .map((entry) => entry.path);
+  }, [scanResult, searchText]);
+
   /** The files the wizard would scan: the selection, else the filtered folder. */
   const scope = useMemo(() => {
-    const base =
-      selectedPaths.length > 0
-        ? selectedPaths
-        : (scanResult?.entries ?? [])
-            .filter((entry) => searchText.trim() === '' || entry.name.toLowerCase().includes(searchText.trim().toLowerCase()))
-            .map((entry) => entry.path);
+    const base = selectedPaths.length > 0 ? selectedPaths : filteredPaths;
     return base.slice(0, MAX_SCRUB_FILES);
-  }, [selectedPaths, scanResult, searchText]);
+  }, [selectedPaths, filteredPaths]);
   const scopeTruncated = selectedPaths.length > 0
     ? selectedPaths.length > MAX_SCRUB_FILES
-    : (scanResult?.entries.length ?? 0) > MAX_SCRUB_FILES;
+    : filteredPaths.length > MAX_SCRUB_FILES;
 
   const detect = async (): Promise<void> => {
     if (scope.length === 0 || scanning) return;
