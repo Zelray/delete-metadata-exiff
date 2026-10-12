@@ -2,7 +2,7 @@
 
 The quality commands check repository instructions and measured source patterns. Existing findings stay visible in `.quality-baseline.json`. New findings fail even when the total falls. Setup adds no product behavior or translation runtime.
 
-Run commands from the app Git root, one at a time. The setup parent owns installation, initial baseline creation, verification and commits. This builder wrote the ratchet and controls without executing tests, builds or gates. Successful verification must be recorded by the parent before the framework is committed.
+Run commands from the app Git root, one at a time. These commands need locked dependencies installed. The combined runner also requires Windows, Node 22+ and the vendored `vendor/exiftool/exiftool.exe`. The lifecycle verifier requires this clone to sit in a directory named `app` inside a parent directory.
 
 ## Ratchet commands
 
@@ -52,4 +52,72 @@ Native tests live in `server/test/quality/ratchet.test.ts`. From the server work
 node ../node_modules/vitest/vitest.mjs run test/quality/ratchet.test.ts
 ```
 
-The tests cover count rise/deletion/slack, broken counters, only-lowering updates, duplicate and replacement identities, per-file length growth, language scanners, mock/assertion/wait controls, installed lint options and parser failures. The normal server suite discovers them through its existing configuration. The parent wires the combined serial command, pre-commit hook and CI separately, and records their verification after execution.
+The tests cover count rise/deletion/slack, broken counters, only-lowering updates, duplicate and replacement identities, per-file length growth, language scanners, mock/assertion/wait controls, installed lint options and parser failures. The normal server suite discovers them through its existing configuration.
+
+## Combined gates
+
+```powershell
+npm run gates
+node quality/gates.mjs --control
+node --test --test-concurrency=1 quality/gates.test.mjs quality/pr-body.test.mjs
+```
+
+`gates.mjs` checks the actual platform, Node version and vendored executable before starting. Its eight steps run in order: server unit tests, UI unit tests, framework Node tests, workspace typechecks, workspace builds, instruction, ratchet and lifecycle static verification. Each step starts only after the preceding step exits zero. The first failure stops the plan. Successful completion prints `GATES_OK`.
+
+Server and UI tests invoke the installed Vitest JavaScript entry directly with their own workspace as the working directory. Framework tests use Node's test runner with concurrency one. Typecheck and build invoke `process.execPath` with the installed `npm-cli.js`; npm runs workspaces in order. There is one lint measurement, inside ratchet. Mutation smoke is separate because it measures committed Git HEAD in scratch worktrees. The combined command does not launch desktop verification or the browser end-to-end matrix.
+
+Each child has an argv array, explicit `shell: false`, inherited stdout/stderr and a ten-minute timeout. Ordinary nonzero exits propagate. Spawn errors, signals and missing exit statuses return 2. The runner preserves each verifier's raw output, including lifecycle caveats. The lifecycle check is static; its named C6 gap and C8 static-only scope still need the existing behavior checks and review.
+
+`createPlan(options)` returns `{ name, command, args, cwd }` steps. `runPlan(plan, { execute, log })` executes them serially; tests inject a synchronous executor. `assertEnvironment(options)` and `resolveNpmCli(options)` expose their inputs for guard tests. These seams let plan tests run without a production ratchet baseline. The real `--control` command runs a scratch Node driver: exit 17 must prevent a later sentinel write, and restoring exit zero must produce that write. It removes only the temporary directory it created.
+
+## Local pre-commit hook
+
+Review `.husky/pre-commit` and `quality/pre-commit.mjs` before installing hooks. With locked dependencies present, run from the app Git root:
+
+```powershell
+npm run hooks:control
+npm run prepare
+```
+
+The tracked hook contains `node quality/pre-commit.mjs`. Husky 9 supplies its small POSIX shim; local command entry remains PowerShell. `createPreCommitPlan(root, node)` selects only instruction then ratchet. `runPreCommit(options)` uses the serial runner, and either child's failure refuses the commit. It does not run full tests or mutation smoke at commit time. Run the relevant checks before committing under P3.
+
+`prepare` calls the installed official Husky 9 API through `pre-commit.mjs --install`. It checks the app working directory and Git root, refuses an existing hook path other than `.husky/_`, validates Husky's returned diagnostic and verifies the resulting local hook path. Husky uses a native Git argv call without enabling a shell. No dependency or custom shim implementation is added. The dependency is already pinned in the lockfile; adding a prepare script requires no dependency resolution change.
+
+GitHub Actions sets `CI=true`. In that ephemeral checkout, prepare prints a skip diagnostic before touching Git hooks. This is the only automated hook-install skip in these commands. A local installation needs Git, Node on the hook's PATH and the full dev dependencies. A custom global or repository hook path must be reviewed before replacement. This workflow does not install global hooks or alter global Git configuration.
+
+`hook-control.mjs` creates an owned Git repository, copies the actual hook and runner, and copies the installed Husky package. It installs Husky there with the actual prepare helper. Harmless instruction and ratchet payloads record their execution and return controlled failures. The control requires each bad commit to be refused, verifies no HEAD was created, then requires a restored commit with the exact expected history. It isolates Git configuration and Husky startup files, clears inherited hook bypass settings for this scratch process, and never bypasses the product hook. Success prints `hook-control: PASS`. Cleanup removes only its owned scratch directory.
+
+To remove this clone's installation after confirming `.husky/_` is the effective path:
+
+```powershell
+git config --local --get core.hooksPath
+git config --local --unset core.hooksPath
+```
+
+An inherited hook path becomes effective again when the local value is removed. Review it before committing. Generated `.husky/_` files are disposable; the tracked `.husky/pre-commit` remains available for reinstall. Hook installation and the control need local verification before their results can be relied on.
+
+## Proven red and mutation smoke
+
+```powershell
+$env:BASE = '<existing base commit>'
+$env:HEAD = '<committed head>'
+$env:PR_TITLE = 'fix: describe the behavior change'
+npm run test:proven-red
+npm run test:mutation
+```
+
+The values above are inputs to supply for the range being reviewed. The proven-red CLI reads `BASE`, `HEAD` and `PR_TITLE`; positional base/head with optional `--title` remains available. It resolves both commits, computes their real merge base, checks old tests there, then runs committed head tests and support files against that old code. Missing-symbol failures are reported separately from assertion failures. Collection, setup, timeout and process failures cannot count as assertion proof. Clear task-specific environment variables when finished with a local range.
+
+Documentation and framework-only ranges can skip proven red with a diagnostic. A conventional maintenance title can skip a source range with no changed product unit tests, with a warning. Root manifests remain source changes. This framework bootstrap is maintenance work and uses an explicit `chore: setup framework` title for range verification. That warned skip is not red proof. Changed product unit tests still take the real proof path, including for maintenance titles. A feature changing a root manifest still needs tests or fails P2.
+
+Mutation smoke uses committed HEAD and runs each clean/mutant pair serially in an owned worktree. Only an assertion failure in the same selected tests kills a mutant. A survivor is failure; an infrastructure error is not a kill. Uncommitted product edits are not measured by this command. These commands remove their owned worktrees and leave the product working tree alone.
+
+## Pull requests and Windows CI
+
+The PR template has Acceptance and Spec sections. Fill Acceptance with the user's issue acceptance lines or a link to the exact section. For a `feat` title, link the spec or explain its absence. Template comments alone do not satisfy either section. `quality/pr-body.mjs` accepts `PR_TITLE` and `PR_BODY` through the environment, or body text through `--stdin`. It checks section content; reviewers still check whether the content matches the issue and whether the evidence supports it.
+
+`.github/workflows/quality.yml` runs on push and PR updates. The `Windows gates` job checks out the actual head into `app` with full history, installs locked dependencies on Windows with Node 22, then runs combined gates, proven red and mutation smoke serially. The action references are immutable v4 SHAs supplied after upstream verification. Each clone keeps the parent/app layout required by lifecycle verification. PR base/head/title and instruction range inputs arrive through environment variables. PR text is never inserted into executable shell text.
+
+An initial push with an all-zero before SHA has no base commit. CI prints a warning, clears the instruction range base and skips only proven red for that push. Other missing or invalid references fail normally. A PR always requires its base. The `PR acceptance` job runs after gates for same-repository PRs whose author is not a bot. It uses environment-only title/body inputs and the actual PR head. Fork and bot PRs skip that body job; they still run Windows gates.
+
+The workflow has only `contents: read`, uses no secrets, and performs no publishing, pushes or branch-protection changes. It has not been run remotely. After a real CI run confirms the behavior, the candidate required-check names are `Windows gates` and `PR acceptance`. No branch protection is configured by this setup; the conditional PR check needs a maintainer policy before being made required.
