@@ -15,3 +15,8 @@ consent/blocker sequencing, credential meaning, or PID identity. Existing behavi
 Rust/PowerShell are not fed to a JavaScript comment stripper. Their lifecycle checks retain the current documented limits.
 Original server baseline warnings involved worker termination after passing assertions; their root cause remains unproven.
 The parent's setup record holds the raw baseline evidence. Do not reinterpret a warning as a proved process leak or a waived future failure.
+
+The glib <0.20 Dependabot alert (VariantStrIter unsoundness) is dismissed as not used: glib is a Linux-only transitive
+dependency of the Tauri 2 GTK stack (tauri -> tao/wry/tray-icon -> gtk 0.18 -> glib 0.18.5) and cargo tree proves it is
+never compiled for the Windows-only product. No fix exists in the Tauri 2.x line: 0.18.5 is the final 0.18.x and the
+patch is the semver-incompatible glib 0.20. Revisit when any build targets Linux/macOS or Tauri's platform stack upgrades.
