@@ -139,7 +139,9 @@ export function linkDependencies(root, dependencyRoot) {
 
 export function createScratch({ repo, ref, dependencyRoot = repo, log = console.log }) {
   const commit = resolveCommit(repo, ref);
-  const container = mkdtempSync(path.join(tmpdir(), 'gap-trap-worktree-'));
+  // Resolve the temp root to its real long-form path: 8.3 short names
+  // (e.g. RUNNER~1 on CI) break vite-node module resolution in UI targets.
+  const container = mkdtempSync(path.join(realpathSync(tmpdir()), 'gap-trap-worktree-'));
   const root = path.join(container, 'tree');
   let registered = false;
   let dependencies;
