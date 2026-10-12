@@ -301,6 +301,8 @@ export class WritePipeline {
   private readonly activeBatches = new Set<string>();
   /** Cooperative cancel requests, honored BETWEEN chunks only. */
   private readonly cancelFlags = new Set<string>();
+  /** Batches past their last between-chunk boundary: later cancels are refused. */
+  private readonly cancelClosedBatches = new Set<string>();
 
   constructor(options: WritePipelineOptions) {
     this.engine = options.engine;
@@ -646,6 +648,7 @@ export class WritePipeline {
     // A cancel request left over from an earlier batch with a colliding id
     // cannot exist (ids are unique), but clear defensively on entry.
     this.cancelFlags.delete(batchId);
+    this.cancelClosedBatches.delete(batchId);
 
     const outcomes: WriteOutcome[] = [];
     const total = stored.files.length;
@@ -706,6 +709,11 @@ export class WritePipeline {
           cancelledAt = new Date().toISOString();
           break;
         }
+        // Once the final chunk starts there is no boundary left where a flag
+        // could be honored, so the batch stops being a cancel target and a
+        // late requestCancel is refused instead of promising a cancellation
+        // that would never happen.
+        if (i === stored.chunks.length - 1) this.cancelClosedBatches.add(batchId);
         const chunk = stored.chunks[i] as string[];
         const mErr = path.join(stored.manifestDir, `chunk${i}-err.txt`);
         const mSame = path.join(stored.manifestDir, `chunk${i}-same.txt`);
@@ -931,6 +939,7 @@ export class WritePipeline {
     } finally {
       this.activeBatches.delete(batchId);
       this.cancelFlags.delete(batchId);
+    this.cancelClosedBatches.delete(batchId);
       await rm(stored.manifestDir, { recursive: true, force: true }).catch(() => undefined);
       await release.release();
     }
@@ -949,6 +958,12 @@ export class WritePipeline {
       return {
         requested: false,
         note: 'No write batch with this id is running right now (it may already have finished, or the id is wrong). Nothing was cancelled and nothing was changed.',
+      };
+    }
+    if (this.cancelClosedBatches.has(batchId)) {
+      return {
+        requested: false,
+        note: 'The batch is already writing its final chunk, so there is nothing left to cancel; it completes with every file written and verified.',
       };
     }
     this.cancelFlags.add(batchId);

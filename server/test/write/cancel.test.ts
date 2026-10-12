@@ -145,6 +145,31 @@ describe('graceful batch cancel', () => {
     expect(result.outcome.files[0]?.verified).toBe(true);
   });
 
+  it('refuses a cancel raised after the final chunk has started (nothing left to skip)', async () => {
+    const solo = await fixture.put('cancel-late.png');
+    const envelope = await harness.pipeline.preview({ files: [solo], edits: EDIT });
+    // A mutable object field, not a reassigned local: TypeScript's flow
+    // analysis cannot see assignments made inside this callback and would
+    // narrow a plain local to null at the assertion.
+    const verdict: { requested: boolean | null } = { requested: null };
+    const result = await harness.pipeline.execute(envelope.preview.previewId, {
+      onProgress: (event) => {
+        // The only chunk IS the final chunk: from its 'write' moment onward no
+        // boundary exists where a flag could be honored, so the request must
+        // be refused honestly instead of returning a cancellation promise the
+        // batch cannot keep.
+        if (event.phase === 'write') {
+          verdict.requested = harness.pipeline.requestCancel(event.batchId).requested;
+        }
+      },
+    });
+    expect(verdict.requested).toBe(false);
+    const lateOutcome = result.outcome as typeof result.outcome & { cancelled?: boolean };
+    expect(lateOutcome.cancelled).toBeUndefined();
+    expect(result.outcome.files[0]?.status).toBe('updated');
+    expect(result.outcome.files[0]?.verified).toBe(true);
+  });
+
   it('refuses to cancel an unknown or already-finished batch id', async () => {
     expect(harness.pipeline.requestCancel('wb_does_not_exist').requested).toBe(false);
     const solo = await fixture.put('cancel-done.png');
