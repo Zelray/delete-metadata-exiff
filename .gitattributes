@@ -1,0 +1,4 @@
+# Byte-stable checkouts: content hashes in quality/vendor-baseline.json are
+# computed over LF bytes, so every platform checks text files out as LF.
+# text=auto leaves detected binary files (exiftool.exe, images) untouched.
+* text=auto eol=lf
