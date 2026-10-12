@@ -1,0 +1,91 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+    working-directory: app
+
+jobs:
+  gates:
+    name: Windows gates
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      EVENT_NAME: ${{ github.event_name }}
+      BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      GT_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      GT_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Check out actual head with full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: app
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Handle an initial push without a base commit
+        run: |
+          if ($env:BASE -eq ('0' * 40)) {
+            if ($env:EVENT_NAME -ne 'push') { throw 'A pull request must have a base commit.' }
+            '::warning::Initial push has no before commit; proven-red will be skipped. Other gates still run.'
+            $env:GT_BASE = ''
+            'GT_BASE=' >> $env:GITHUB_ENV
+          }
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run combined gates serially
+        run: npm run gates
+      - name: Prove changed tests red against the merge base
+        run: |
+          if ($env:BASE -eq ('0' * 40)) {
+            'proven-red: skipped initial push because no base commit exists'
+          } else {
+            node quality/proven-red.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Run mutation smoke against committed head
+        run: npm run test:mutation
+
+  pr-acceptance:
+    name: PR acceptance
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot'
+    needs: gates
+    runs-on: windows-latest
+    timeout-minutes: 5
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+    steps:
+      - name: Check out actual PR head with full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: app
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Check acceptance and spec sections
+        run: node quality/pr-body.mjs
