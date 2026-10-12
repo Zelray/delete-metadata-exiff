@@ -21,7 +21,14 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.5",
     "@tauri-apps/cli": "^2.12.1",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "eslint": "9.39.5",
+    "eslint-plugin-i18next": "6.1.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "husky": "9.1.7",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.1"
   }
 }
