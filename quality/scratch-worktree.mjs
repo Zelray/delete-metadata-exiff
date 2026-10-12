@@ -139,9 +139,15 @@ export function linkDependencies(root, dependencyRoot) {
 
 export function createScratch({ repo, ref, dependencyRoot = repo, log = console.log }) {
   const commit = resolveCommit(repo, ref);
-  // Resolve the temp root to its real long-form path: 8.3 short names
-  // (e.g. RUNNER~1 on CI) break vite-node module resolution in UI targets.
-  const container = mkdtempSync(path.join(realpathSync(tmpdir()), 'gap-trap-worktree-'));
+  // Resolve the temp root to its final long-form path: GitHub's Windows
+  // runners expose TEMP under an 8.3 short name (RUNNER~1), which breaks
+  // vite-node module resolution in UI targets. The JS realpathSync follows
+  // links but keeps 8.3 aliases; only the native call expands them
+  // (GetFinalPathNameByHandle). Fall back to the raw temp dir if native
+  // resolution is unavailable.
+  let tempRoot = tmpdir();
+  try { tempRoot = realpathSync.native(tempRoot); } catch { /* keep raw temp */ }
+  const container = mkdtempSync(path.join(tempRoot, 'gap-trap-worktree-'));
   const root = path.join(container, 'tree');
   let registered = false;
   let dependencies;
