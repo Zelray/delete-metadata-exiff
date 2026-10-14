@@ -159,6 +159,37 @@ describe('readTagValues classification', () => {
     expect(readback.values.get('c:/p/silent.png')).toEqual({});
   });
 
+  // A doc carrying exiftool's RESERVED Warning key (real files with
+  // damaged-but-readable metadata warn like this while still returning every
+  // value) is a NOTE, not a read failure: the read reached the file, the
+  // values are comparable, and treating it as an error would fail
+  // verification on a perfectly healthy read — forever, since the retry hits
+  // the same warning.
+  it('treats a reserved Warning doc as a reached file with data, never as a read error', async () => {
+    const winPath = 'C:\\Photos\\warny.png';
+    const readback = await readTagValues(
+      fakeSession(
+        cannedResult([
+          {
+            SourceFile: winPath,
+            Warning: '[minor] Bad format for XMP structure',
+            'XMP-dc:Title': 'kept',
+          },
+        ]),
+        [],
+      ),
+      [winPath],
+      ['XMP-dc:Title'],
+    );
+
+    // RED today: the warning lands in readErrors and the file is dropped
+    // from readPaths, so verification would fail a healthy, fully-readable
+    // file.
+    expect(readback.readErrors.has('c:/photos/warny.png')).toBe(false);
+    expect(readback.readPaths.has('c:/photos/warny.png')).toBe(true);
+    expect(readback.values.get('c:/photos/warny.png')).toEqual({ 'XMP-dc:Title': 'kept' });
+  });
+
   // Regression (real engine, gpsStrip undo false failure): a HEALTHY GPS
   // photo's read doc carries 'GPS:GPSHPositioningError': '1.5 m' — a real
   // tag whose NAME ends in Error. The shared extractor files it as an error

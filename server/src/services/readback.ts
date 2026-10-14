@@ -6,17 +6,21 @@
  * The persistent engine never throws for in-band per-file problems, and an
  * empty/unparseable read simply resolves with zero documents — so a plain
  * path->values map cannot distinguish "the tag is genuinely absent" from
- * "the read never reached the file". This module keeps three signals side
+ * "the read never reached the file". This module keeps four signals side
  * by side:
  *
- *  - `values`     — path -> tag values, the exact map the pipeline has always
- *                   consumed. Every requested path gets an entry (an empty
- *                   object when the read produced nothing for it), so the
- *                   callers' `?? {}` lookups keep working unchanged.
- *  - `readPaths`  — the paths for which the engine actually returned a
- *                   document carrying a SourceFile: the proof that the read
- *                   reached the file.
- *  - `readErrors` — path -> the engine's in-band error message for that file.
+ *  - `values`       — path -> tag values, the exact map the pipeline has
+ *                     always consumed. Every requested path gets an entry
+ *                     (an empty object when the read produced nothing for
+ *                     it), so the callers' `?? {}` lookups keep working
+ *                     unchanged.
+ *  - `readPaths`    — the paths for which the engine actually returned a
+ *                     document carrying a SourceFile: the proof that the
+ *                     read reached the file.
+ *  - `readErrors`   — path -> the engine's in-band error message for that
+ *                     file (the read genuinely failed there).
+ *  - `readWarnings` — path -> the engine's in-band warning for that file
+ *                     (the read succeeded; the engine has a note).
  *
  * KEY CONTRACT (the pipeline matches re-read entries against files through
  * normalizeExifPath — the one canonicalizer used everywhere an
@@ -35,14 +39,21 @@ import { matchesTagKey } from './writePipeline.js';
 /** Files per metadata read round trip. */
 const READ_BATCH = 100;
 
-/** One read's three signals: the values, whether the read reached each file, and per-file errors. */
+/** One read's four signals: the values, whether the read reached each file, per-file errors, and per-file warnings. */
 export interface TagReadback {
   /** Path -> requested-tag values, keyed by normalizeExifPath (every requested path gets an entry). */
   values: Map<string, Record<string, string>>;
-  /** Normalized paths whose read actually returned a document with data (no in-band error). */
+  /** Normalized paths whose read returned a document for the file (no in-band ERROR — a warning doc still counts as reached). */
   readPaths: Set<string>;
   /** Normalized path -> the engine's in-band error message for that file. */
   readErrors: Map<string, string>;
+  /**
+   * Normalized path -> the engine's in-band warning for that file. A warning
+   * is a NOTE, not a read failure: the file was reached and its values are
+   * comparable, so the pipeline surfaces these on the outcome instead of
+   * failing verification (a warning would re-fire on every retry).
+   */
+  readWarnings: Map<string, string>;
 }
 
 /** Flatten an exiftool JSON value to the string form the UI previews. */
@@ -73,6 +84,7 @@ export async function readTagValues(
   const values = new Map<string, Record<string, string>>();
   const readPaths = new Set<string>();
   const readErrors = new Map<string, string>();
+  const readWarnings = new Map<string, string>();
   for (let offset = 0; offset < paths.length; offset += READ_BATCH) {
     const batch = paths.slice(offset, offset + READ_BATCH);
     const argv = buildJsonReadArgs(batch, { tags });
@@ -89,23 +101,32 @@ export async function readTagValues(
       if (typeof source === 'string') byPath.set(normalizeExifPath(source), doc);
     }
 
-    // Keep the engine's in-band per-file errors — but ONLY under exiftool's
-    // own reserved diagnostic keys: bare 'Error'/'Warning', optionally
-    // 'ExifTool:'-prefixed. Tag names can legitimately end in Error (every
-    // healthy GPS photo reads back GPS:GPSHPositioningError = "1.5 m"), and
-    // the shared extractor flags ANY such key as an error diagnostic — it
-    // cannot tell a tag from a diagnostic, but this consumer can, because
-    // exiftool's reserved pseudo-keys cannot be confused with family-grouped
-    // tag names. Trusting anything else marks healthy files as read errors
-    // (the gpsStrip undo false failure). The key is read from the document
-    // itself: the session's diagnostics channel drops it at the boundary,
-    // and the documents are where it survives.
+    // Keep the engine's in-band per-file diagnostics — but ONLY under
+    // exiftool's own reserved diagnostic keys: bare 'Error'/'Warning',
+    // optionally 'ExifTool:'-prefixed. Tag names can legitimately end in
+    // Error (every healthy GPS photo reads back GPS:GPSHPositioningError =
+    // "1.5 m"), and the shared extractor flags ANY such key as an error
+    // diagnostic — it cannot tell a tag from a diagnostic, but this consumer
+    // can, because exiftool's reserved pseudo-keys cannot be confused with
+    // family-grouped tag names. Trusting anything else marks healthy files
+    // as read errors (the gpsStrip undo false failure). The key is read from
+    // the document itself: the session's diagnostics channel drops it at the
+    // boundary, and the documents are where it survives.
+    //
+    // The two reserved classes travel SEPARATELY (issue-#3 review finding):
+    // an Error means the read genuinely failed for that file (blocking); a
+    // Warning means the file was read fine but the engine wants to say
+    // something (non-blocking — blocking a warning would fail healthy
+    // files forever, since the retry re-reads the same warning).
     for (const [docKey, doc] of byPath) {
       for (const [key, value] of Object.entries(doc)) {
-        if (!/^(exiftool:)?(error|warning)$/i.test(key)) continue;
+        const isError = /^(exiftool:)?error$/i.test(key);
+        const isWarning = /^(exiftool:)?warning$/i.test(key);
+        if (!isError && !isWarning) continue;
         if (typeof value !== 'string' || value.length === 0) continue;
-        const seen = readErrors.get(docKey);
-        readErrors.set(docKey, seen === undefined ? value : `${seen}; ${value}`);
+        const sink = isError ? readErrors : readWarnings;
+        const seen = sink.get(docKey);
+        sink.set(docKey, seen === undefined ? value : `${seen}; ${value}`);
       }
     }
 
@@ -139,5 +160,5 @@ export async function readTagValues(
       values.set(key, fileValues);
     }
   }
-  return { values, readPaths, readErrors };
+  return { values, readPaths, readErrors, readWarnings };
 }

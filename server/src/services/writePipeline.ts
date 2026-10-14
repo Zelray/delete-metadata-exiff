@@ -206,6 +206,16 @@ export interface ExecuteOptions {
      * when a healthy document came back — it stands in for the no-data case.
      */
     emptyReadbackFor?: readonly string[];
+
+    /**
+     * TEST SEAM ONLY (review-follow-up on the issue-#3 fix): stands in for
+     * "the re-read doc carried exiftool's reserved Warning key" so the
+     * non-blocking warning path is exercisable without a file whose metadata
+     * makes the engine warn. The file verifies normally and the warning
+     * surfaces on the outcome. Never exposed over HTTP (routes build
+     * ExecuteOptions with destructive + onProgress only).
+     */
+    warningReadbackFor?: readonly string[];
   };
 }
 
@@ -793,6 +803,9 @@ export class WritePipeline {
         const emptyReadback = new Set(
           (options.faultInjection?.emptyReadbackFor ?? []).map(normalizeExifPath),
         );
+        const warningReadback = new Set(
+          (options.faultInjection?.warningReadbackFor ?? []).map(normalizeExifPath),
+        );
 
         for (const filePath of chunk) {
           const key = normalizeExifPath(filePath);
@@ -841,6 +854,18 @@ export class WritePipeline {
               // that never returned anything. A genuine delete on a healthy
               // read still verifies: the doc comes back, the tags are gone.
               const readError = reread.readErrors.get(key);
+              // A reserved Warning doc is a note, not a read failure: the
+              // read reached the file, so verification proceeds below and
+              // the note rides the outcome's warnings. Failing it would
+              // strand healthy files in the retry list forever — the retry
+              // re-reads the same warning.
+              const readWarning = reread.readWarnings.get(key) ??
+                (warningReadback.has(key)
+                  ? 'stand-in for a reserved Warning key (test seam)'
+                  : undefined);
+              if (readWarning !== undefined) {
+                warnings.push(`Post-write re-read warning for this file: ${readWarning}.`);
+              }
               if (readError !== undefined) {
                 outcomeStatus = 'failed';
                 stage = 'verify';

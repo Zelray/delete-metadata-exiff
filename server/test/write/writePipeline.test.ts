@@ -180,6 +180,31 @@ describe('backup verification', () => {
     expect(res.outcome.allVerified).toBe(false);
     expect(res.outcome.retryFilePaths).toContain(file);
   });
+
+  // A re-read doc carrying exiftool's reserved Warning key is NOT a read
+  // failure: the read reached the file with comparable values, so the write
+  // verifies normally and the warning is surfaced on the outcome instead.
+  // Blocking it would fail healthy files forever (the retry re-reads the
+  // same warning).
+  it('verifies a write whose re-read carried a warning, and surfaces the warning on the outcome', async () => {
+    const file = await fixture.put('warning-readback.png');
+    const env = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'Warned but verified' }],
+    });
+    const res = await harness.pipeline.execute(env.preview.previewId, {
+      faultInjection: { warningReadbackFor: [file] },
+    });
+    const outcome = res.outcome.files[0];
+    // RED today: the warning-doc class lands in readErrors, so the file is
+    // failed at verify with the "...reported an error..." message.
+    expect(outcome?.status).toBe('updated');
+    expect(outcome?.verified).toBe(true);
+    expect(outcome?.errors.join(' ')).not.toMatch(/re-read/i);
+    // The warning still reaches the user — as a warning, not a failure.
+    expect(outcome?.warnings.join(' ')).toMatch(/re-read warning for this file/i);
+    expect(res.outcome.allVerified).toBe(true);
+  });
 });
 
 describe('three-valued results from a mixed batch', () => {
