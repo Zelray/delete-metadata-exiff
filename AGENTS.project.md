@@ -121,3 +121,20 @@ Read each listed playbook before work in that area.
 | Engine, writes, lifecycle, domain facts | agents/project/domain-context.md |
 
 Detailed migration and limitations live in the project playbooks. The instruction gate uses an explicit initial 3000-word budget.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`Zelray/delete-metadata-exiff`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: glossary in `CONTEXT.md` at the repo root; ADRs lazily in `docs/adr/`. See `docs/agents/domain.md`.
+
+Owner-directed setup via mattpocock-skills, 2026-10-14. The instruction gate pins CLAUDE.md
+byte-exact, so this pointer block lives here instead of the loader.
