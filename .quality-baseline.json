@@ -1347,7 +1347,7 @@
     "scripts/verify-server.mjs": 532,
     "server/src/routes/writes.ts": 468,
     "server/src/services/recovery.ts": 406,
-    "server/src/services/writePipeline.ts": 1075,
+    "server/src/services/writePipeline.ts": 1086,
     "tauri/src-tauri/src/engine.rs": 503,
     "tauri/src-tauri/src/main.rs": 406,
     "ui/src/api/client.ts": 468,
