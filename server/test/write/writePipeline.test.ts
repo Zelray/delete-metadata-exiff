@@ -127,6 +127,84 @@ describe('backup verification', () => {
     // The file WAS written (backup exists) — the result is honest about that.
     await expect(readTagsOnce(file, ['XMP-dc:Title'])).resolves.toMatchObject({ 'XMP-dc:Title': 'Verified?' });
   });
+
+  // Issue #3: a delete's expected-after state is an empty tag map, so when
+  // the post-write re-read comes back with NO tag data at all, {} vs {} used
+  // to compare as success. A re-read that returned nothing is not a re-read
+  // that succeeded — the file must fail at stage verify, not verify vacuously.
+  it('marks a file failed (stage verify) when the post-write re-read yields no data for the file', async () => {
+    const file = await fixture.put('empty-readback-delete.png');
+    // Pre-write a Title (the mixed-batch pattern) so the delete has something
+    // to remove and lands on the real updated/verified path.
+    const pre = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'delete me' }],
+    });
+    await harness.pipeline.execute(pre.preview.previewId);
+
+    const env = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'XMP-dc:Title', op: 'delete' }],
+    });
+    // Force the re-read for this file to produce no data; the empty readback
+    // must be an honest verify failure, never an empty-equals-empty match.
+    const res = await harness.pipeline.execute(env.preview.previewId, {
+      faultInjection: { emptyReadbackFor: [file] },
+    });
+    const outcome = res.outcome.files[0];
+    expect(outcome?.status).toBe('failed');
+    expect(outcome?.stage).toBe('verify');
+    expect(outcome?.verified).toBeUndefined();
+    expect(outcome?.errors.join(' ')).toMatch(/re-read/i);
+    expect(res.outcome.allVerified).toBe(false);
+    expect(res.outcome.retryFilePaths).toContain(file);
+  });
+
+  // The vacuous verify is not a delete quirk: ANY write whose re-read yields
+  // no data must fail at stage verify instead of claiming a success that no
+  // read ever confirmed. Same seam, plain set, fresh file.
+  it('marks a plain set failed (stage verify) when the post-write re-read yields no data for the file', async () => {
+    const file = await fixture.put('empty-readback-set.png');
+    const env = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'Verified?' }],
+    });
+    const res = await harness.pipeline.execute(env.preview.previewId, {
+      faultInjection: { emptyReadbackFor: [file] },
+    });
+    const outcome = res.outcome.files[0];
+    expect(outcome?.status).toBe('failed');
+    expect(outcome?.stage).toBe('verify');
+    expect(outcome?.verified).toBeUndefined();
+    expect(outcome?.errors.join(' ')).toMatch(/re-read/i);
+    expect(res.outcome.allVerified).toBe(false);
+    expect(res.outcome.retryFilePaths).toContain(file);
+  });
+
+  // A re-read doc carrying exiftool's reserved Warning key is NOT a read
+  // failure: the read reached the file with comparable values, so the write
+  // verifies normally and the warning is surfaced on the outcome instead.
+  // Blocking it would fail healthy files forever (the retry re-reads the
+  // same warning).
+  it('verifies a write whose re-read carried a warning, and surfaces the warning on the outcome', async () => {
+    const file = await fixture.put('warning-readback.png');
+    const env = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'XMP-dc:Title', op: 'set', value: 'Warned but verified' }],
+    });
+    const res = await harness.pipeline.execute(env.preview.previewId, {
+      faultInjection: { warningReadbackFor: [file] },
+    });
+    const outcome = res.outcome.files[0];
+    // RED today: the warning-doc class lands in readErrors, so the file is
+    // failed at verify with the "...reported an error..." message.
+    expect(outcome?.status).toBe('updated');
+    expect(outcome?.verified).toBe(true);
+    expect(outcome?.errors.join(' ')).not.toMatch(/re-read/i);
+    // The warning still reaches the user — as a warning, not a failure.
+    expect(outcome?.warnings.join(' ')).toMatch(/re-read warning for this file/i);
+    expect(res.outcome.allVerified).toBe(true);
+  });
 });
 
 describe('three-valued results from a mixed batch', () => {

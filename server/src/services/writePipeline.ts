@@ -49,7 +49,6 @@ import type {
 } from '@metadesk/shared';
 import {
   assertNoOverwriteArgs,
-  buildJsonReadArgs,
   buildWriteArgs,
   isValidTagShape,
   toValueSlot,
@@ -59,6 +58,7 @@ import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { newRecordId, sha256File, Journal, type BatchStartRecord } from './journal.js';
 import { findForeignTempFiles, WriteLock } from './lock.js';
 import { normalizeExifPath } from './exifPath.js';
+import { readTagValues } from './readback.js';
 import {
   classifyFiles,
   parseSummary,
@@ -70,8 +70,6 @@ import { assertSafePath } from './pathGuard.js';
 
 /** Files per execution chunk. */
 export const DEFAULT_CHUNK_SIZE = 200;
-/** Files per metadata read round trip. */
-const READ_BATCH = 100;
 /** Previews expire after this long; the journal remains the durable record. */
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
 const MAX_STORED_PREVIEWS = 50;
@@ -199,7 +197,26 @@ export interface ExecuteOptions {
    * post-write re-read comparison to fail for the listed files so the
    * verification path is exercisable without a corrupting harness.
    */
-  faultInjection?: { failVerificationFor?: readonly string[] };
+  faultInjection?: {
+    failVerificationFor?: readonly string[];
+    /**
+     * TEST SEAM ONLY: simulates a re-read that produced NO tag data for the
+     * listed files (the vacuous-verify condition of issue #3) so the honest
+     * verify failure is exercisable without a corrupting harness. Fires even
+     * when a healthy document came back — it stands in for the no-data case.
+     */
+    emptyReadbackFor?: readonly string[];
+
+    /**
+     * TEST SEAM ONLY (review-follow-up on the issue-#3 fix): stands in for
+     * "the re-read doc carried exiftool's reserved Warning key" so the
+     * non-blocking warning path is exercisable without a file whose metadata
+     * makes the engine warn. The file verifies normally and the warning
+     * surfaces on the outcome. Never exposed over HTTP (routes build
+     * ExecuteOptions with destructive + onProgress only).
+     */
+    warningReadbackFor?: readonly string[];
+  };
 }
 
 export interface ExecuteResult {
@@ -262,18 +279,6 @@ export function matchesTagKey(actualKey: string, requestedTag: string): boolean 
   if (reqGroup === '') return true;
   const accept = GROUP_FAMILY_ACCEPT[reqGroup] ?? Object.freeze([reqGroup]);
   return accept.includes(actualGroup);
-}
-
-/** Flatten an exiftool JSON value to the string form the UI previews. */
-function flattenValue(value: unknown): string | undefined {
-  if (typeof value === 'string') return value.length > 0 ? value : undefined;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) {
-    const parts = value.map((item) => flattenValue(item) ?? '').filter((p) => p.length > 0);
-    return parts.length > 0 ? parts.join(', ') : undefined;
-  }
-  if (value !== null && typeof value === 'object') return JSON.stringify(value);
-  return undefined;
 }
 
 export interface WritePipelineOptions {
@@ -425,7 +430,7 @@ export class WritePipeline {
     }
 
     // ---- read current values -------------------------------------------------
-    const before = await this.readTagValues(files, affectedTags);
+    const { values: before } = await readTagValues(this.engine, files, affectedTags);
 
     // ---- simulate per collision-free chunk -----------------------------------
     const chunks = planChunks(files, this.chunkSize);
@@ -455,7 +460,7 @@ export class WritePipeline {
 
         // Diff original vs scratch per file.
         const scratchPaths = chunk.map((f) => path.join(scratchDir, path.basename(f)));
-        const after = await this.readTagValues(scratchPaths, affectedTags);
+        const { values: after } = await readTagValues(this.engine, scratchPaths, affectedTags);
         for (let j = 0; j < chunk.length; j += 1) {
           const filePath = chunk[j] as string;
           const scratchPath = scratchPaths[j] as string;
@@ -791,9 +796,15 @@ export class WritePipeline {
 
         // Re-read verification: the written file must match the preview (req #6).
         const verifyTargets = updatedFiles.filter((f) => backupOk.has(f));
-        const reread = await this.readTagValues(verifyTargets, affectedTags);
+        const reread = await readTagValues(this.engine, verifyTargets, affectedTags);
         const forcedFailures = new Set(
           (options.faultInjection?.failVerificationFor ?? []).map(normalizeExifPath),
+        );
+        const emptyReadback = new Set(
+          (options.faultInjection?.emptyReadbackFor ?? []).map(normalizeExifPath),
+        );
+        const warningReadback = new Set(
+          (options.faultInjection?.warningReadbackFor ?? []).map(normalizeExifPath),
         );
 
         for (const filePath of chunk) {
@@ -835,15 +846,49 @@ export class WritePipeline {
                 'Verification failed: the file after writing does not match the preview that was approved.',
               );
             } else {
-              const expected = stored.expectedAfter.get(filePath) ?? {};
-              const actual = reread.get(key) ?? {};
-              const mismatch = this.compareExpected(expected, actual);
-              if (mismatch.length > 0) {
+              // Issue #3: a re-read that produced no comparable data is not a
+              // verification. The read must have BOTH reached this file
+              // without an in-band error before the {}-vs-{} comparison may
+              // run at all — otherwise a delete (whose expected-after is
+              // literally {}) compares vacuously as verified against a read
+              // that never returned anything. A genuine delete on a healthy
+              // read still verifies: the doc comes back, the tags are gone.
+              const readError = reread.readErrors.get(key);
+              // A reserved Warning doc is a note, not a read failure: the
+              // read reached the file, so verification proceeds below and
+              // the note rides the outcome's warnings. Failing it would
+              // strand healthy files in the retry list forever — the retry
+              // re-reads the same warning.
+              const readWarning = reread.readWarnings.get(key) ??
+                (warningReadback.has(key)
+                  ? 'stand-in for a reserved Warning key (test seam)'
+                  : undefined);
+              if (readWarning !== undefined) {
+                warnings.push(`Post-write re-read warning for this file: ${readWarning}.`);
+              }
+              if (readError !== undefined) {
                 outcomeStatus = 'failed';
                 stage = 'verify';
-                errors.push(`After writing, the file does not show the previewed values (${mismatch.join('; ')}).`);
+                errors.push(
+                  `Verification could not run: the post-write re-read reported an error for this file: ${readError}.`,
+                );
+              } else if (!reread.readPaths.has(key) || emptyReadback.has(key)) {
+                outcomeStatus = 'failed';
+                stage = 'verify';
+                errors.push(
+                  'Verification could not run: the post-write re-read returned no data for this file.',
+                );
               } else {
-                verified = true;
+                const expected = stored.expectedAfter.get(filePath) ?? {};
+                const actual = reread.values.get(key) ?? {};
+                const mismatch = this.compareExpected(expected, actual);
+                if (mismatch.length > 0) {
+                  outcomeStatus = 'failed';
+                  stage = 'verify';
+                  errors.push(`After writing, the file does not show the previewed values (${mismatch.join('; ')}).`);
+                } else {
+                  verified = true;
+                }
               }
             }
           }
@@ -1168,46 +1213,6 @@ export class WritePipeline {
     } catch {
       return [];
     }
-  }
-
-  /** Read the requested tags for a batch of paths, keyed by requested tag name. */
-  private async readTagValues(
-    paths: readonly string[],
-    tags: readonly string[],
-  ): Promise<Map<string, Record<string, string>>> {
-    const out = new Map<string, Record<string, string>>();
-    for (let offset = 0; offset < paths.length; offset += READ_BATCH) {
-      const batch = paths.slice(offset, offset + READ_BATCH);
-      const argv = buildJsonReadArgs(batch, { tags });
-      const result = await this.engine.run(argv, {
-        json: true,
-        timeoutMs: 60_000 + batch.length * 500,
-      });
-      const byPath = new Map<string, Record<string, unknown>>();
-      for (const doc of result.json as Array<Record<string, unknown>>) {
-        const source = doc['SourceFile'];
-        if (typeof source === 'string') byPath.set(normalizeExifPath(source), doc);
-      }
-      for (const requested of batch) {
-        const doc = byPath.get(normalizeExifPath(requested));
-        const values: Record<string, string> = {};
-        if (doc !== undefined) {
-          for (const tag of tags) {
-            for (const [key, value] of Object.entries(doc)) {
-              if (key === 'SourceFile') continue;
-              if (!matchesTagKey(key, tag)) continue;
-              const flattened = flattenValue(value);
-              if (flattened !== undefined) {
-                values[tag] = flattened;
-                break;
-              }
-            }
-          }
-        }
-        out.set(normalizeExifPath(requested), values);
-      }
-    }
-    return out;
   }
 
   /**
