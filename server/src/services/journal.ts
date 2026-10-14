@@ -145,6 +145,13 @@ export interface BatchHistory {
   outcomes: WriteOutcome[];
   /** Undo availability: true when reverse edits exist for at least one file. */
   undoable: boolean;
+  /**
+   * Additive (issue #4): true when the reverse plan exists but can never run —
+   * a before-value contained a line break, which the engine refuses to write
+   * back. `undoable` deliberately STAYS true: there IS something to undo, only
+   * the automatic path is blocked (the `_original` backup is the way back).
+   */
+  undoBlocked: boolean;
 }
 
 export interface BackupVerification {
@@ -323,6 +330,11 @@ export class Journal {
       failed: outcomes.filter((o) => o.status === 'failed').length,
     };
 
+    // One plan powers both flags: `undoable` means the plan is non-empty;
+    // `undoBlocked` means the plan can never run (see undoBlockReason). They
+    // are deliberately independent — a blocked batch still HAS something to
+    // undo, which is why the additive flag carries the block instead.
+    const plan = this.computeUndo(intents, results);
     return {
       batchId,
       startedAt: start?.timestamp ?? null,
@@ -332,7 +344,8 @@ export class Journal {
       interrupted: end === null || end.interrupted === true,
       ...counts,
       outcomes,
-      undoable: this.computeUndo(intents, results).length > 0,
+      undoable: plan.length > 0,
+      undoBlocked: undoBlockReason(plan) !== null,
     };
   }
 
@@ -471,6 +484,25 @@ export class Journal {
     await writeFile(exportPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
     return exportPath;
   }
+}
+
+/**
+ * The truthful reason an undo plan can never run, or null when every reverse
+ * edit is writable. The engine's value guard (`toValueSlot` in argBuilder.ts)
+ * rejects line breaks and NULs in `set` values — argv and argfile lines cannot
+ * carry them — so a reverse edit that would restore such a before-value always
+ * fails at argument build time. The History view surfaces the block BEFORE the
+ * click (`undoBlocked`), and the undo boundary throws it as `undo_blocked`
+ * instead of letting the raw guard error escape.
+ */
+export function undoBlockReason(plan: UndoPlanEntry[]): string | null {
+  const blocked = plan.some((entry) =>
+    entry.edits.some((edit) => edit.op === 'set' && /[\r\n\0]/.test(edit.value ?? '')),
+  );
+  return blocked
+    ? 'This batch can\'t be undone automatically: the value it would restore contains line ' +
+        'breaks, and MetaDesk can\'t write line breaks back. Nothing was changed.'
+    : null;
 }
 
 /** sha256 of a file, streamed (backups can be large). */

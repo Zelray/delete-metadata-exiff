@@ -16,6 +16,8 @@ import { act } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { FolderScanResult } from '@metadesk/shared';
 import App from '../App';
+import { MetaApiError } from '../api/client';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { BatchPanel } from '../views/BatchPanel';
 import { HistoryView } from '../views/HistoryView';
 import { SaveReviewModal, type WriteRunFlight } from '../components/SaveReviewModal';
@@ -876,5 +878,94 @@ describe('the in-dialog flight section fidelity', () => {
     expect(document.querySelector('[role="dialog"] [role="status"]')).toBeNull();
     expect(bodyText()).not.toContain('Cancel this batch');
     await unmount(idleRun.root, idleRun.container);
+  });
+});
+
+// ---- undo honesty for a blocked batch (issue #4) ---------------------------------
+//
+// A batch whose original value contained line breaks can never be undone
+// (the reverse write would have to put a multiline value back). The History
+// card must say so BEFORE the click — disabled button, blocked badge, skipped
+// by the "last reversible batch" chip — and when the undo is still attempted
+// (e.g. from outside the history page), the error banner must name the real
+// cause and the way back, not the misleading field-list hint.
+
+/** A HistoryBatch-shaped history row (plain JSON over the stubbed fetch). */
+function makeHistoryBatch(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    batchId: 'wb_blocked',
+    startedAt: '2026-10-05T10:00:00Z',
+    finishedAt: '2026-10-05T10:00:05Z',
+    mode: 'edit',
+    description: 'Blocked batch',
+    interrupted: false,
+    updated: 1,
+    unchanged: 0,
+    failed: 0,
+    outcomes: [{ filePath: 'C:\\photos\\a.png', status: 'updated', warnings: [], errors: [] }],
+    undoable: true,
+    backups: [],
+    ...overrides,
+  };
+}
+
+describe('undo honesty for blocked batches (issue #4)', () => {
+  it('a blocked batch says so before the click: its undo button is disabled, badged, and skipped by the last-batch chip', async () => {
+    stubFetch((url) => {
+      if (url.startsWith('/api/write/history')) {
+        return json({
+          batches: [makeHistoryBatch({ undoable: true, undoBlocked: true })],
+          writeUnlocked: false,
+          mode: 'read-only',
+          commandPreview: [],
+        });
+      }
+      return json({ code: 'not_found', message: 'unexpected' }, 404);
+    });
+    const { root, container } = renderWithProviders(<HistoryView />);
+    await flush();
+    expect(bodyText()).toContain('Blocked batch');
+
+    // The per-card affordances live behind the card's disclosure.
+    await act(async () => {
+      buttonWith('Blocked batch')?.click();
+    });
+    const undo = buttonWith('Restore this change (undo)');
+    // C6: no bare existence check — the disabled assertion below fails on
+    // undefined (button missing) just as it does on false (button enabled).
+    // RED today: the button is enabled — undoBlocked is ignored.
+    expect(undo?.disabled).toBe(true);
+    // The blocked badge renders, and the batch is NOT reported as "nothing to
+    // undo" — there IS something to undo, it just cannot be auto-undone.
+    expect(bodyText()).toMatch(/can.?t auto-undo/i);
+    expect(bodyText()).not.toContain('nothing to undo');
+    // The chip must skip a blocked batch, not invite a click on it.
+    expect(bodyText()).not.toContain('Restore last batch');
+    await unmount(root, container);
+  });
+
+  it('an undo_blocked error names the way back (the _original backup), never the field-list hint', async () => {
+    const { root, container } = renderWithProviders(
+      <ErrorBanner
+        error={
+          new MetaApiError(400, {
+            code: 'undo_blocked',
+            message:
+              "This batch can't be undone automatically: the value it would restore contains line breaks, and MetaDesk can't write line breaks back. Nothing was changed.",
+          })
+        }
+        context="Preparing the undo"
+      />,
+    );
+    const text = bodyText();
+    expect(text).toContain('Preparing the undo');
+    // The server's truthful message is echoed verbatim.
+    expect(text).toContain("can't write line breaks back");
+    // RED today: no 'undo_blocked' hint exists, so the default hint renders —
+    // the recovery hint must point at the _original backup instead.
+    expect(text).toMatch(/_original/);
+    expect(text).toMatch(/first contact/i);
+    expect(text).not.toContain('friendly field list');
+    await unmount(root, container);
   });
 });

@@ -142,6 +142,8 @@ export interface HistoryBatch {
   failed: number;
   outcomes: WriteOutcome[];
   undoable: boolean;
+  /** Additive (issue #4): the undo plan exists but can never run — the original value had line breaks. */
+  undoBlocked: boolean;
   backups: HistoryBackupRow[];
   /** Additive (leaf 1.1.4b): present on destructive flows — the strip/scrub id. */
   scrubId?: string;

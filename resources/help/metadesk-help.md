@@ -67,6 +67,9 @@ exact change first, keeping a verified backup, and leaving a way back.
   click; undoing the same batch twice is refused (it would re-apply the change).
 - The nuclear option — "Restore _original files" — reverts EVERYTHING since first
   contact, not just the last batch. It is labeled and confirmed twice for that reason.
+- If a batch's original value contained line breaks, it cannot be undone automatically —
+  its History card says so — and the way back is the first-generation _original backup:
+  "Restore _original files" puts the pre-edit bytes back.
 
 ## Browse
 

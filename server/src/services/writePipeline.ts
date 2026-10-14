@@ -55,7 +55,7 @@ import {
 } from '../engine/argBuilder.js';
 import { assertArgsSafe } from '../engine/engineArgs.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
-import { newRecordId, sha256File, Journal, type BatchStartRecord } from './journal.js';
+import { newRecordId, sha256File, Journal, undoBlockReason, type BatchStartRecord } from './journal.js';
 import { findForeignTempFiles, WriteLock } from './lock.js';
 import { normalizeExifPath } from './exifPath.js';
 import { readTagValues } from './readback.js';
@@ -88,7 +88,9 @@ export type WritePipelineErrorCode =
   | 'validation'
   | 'undo_unavailable'
   | 'batch_too_large'
-  | 'already_undone';
+  | 'already_undone'
+  /** The undo plan exists but can never run (a before-value had a line break). */
+  | 'undo_blocked';
 
 export class WritePipelineError extends Error {
   readonly code: WritePipelineErrorCode;
@@ -1093,6 +1095,14 @@ export class WritePipeline {
         'undo_unavailable',
         'This batch has no files that can be undone (nothing was updated, or no before-values were recorded).',
       );
+    }
+    // Issue #4: a reverse edit whose value contains a line break can NEVER be
+    // built (the engine's value guard refuses multiline values), so BOTH undo
+    // steps refuse here — with their own truthful code — instead of escaping
+    // as a raw argument-build error the route would mislabel unsafe_tag.
+    const blockReason = undoBlockReason(plan);
+    if (blockReason !== null) {
+      throw new WritePipelineError('undo_blocked', blockReason, { batchId });
     }
     const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start') ?? null;
     // A destructive batch's reverse edits may restore tags OUTSIDE the curated
