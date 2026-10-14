@@ -28,7 +28,9 @@
  * the no-yank completion latch.
  * API-level cases (no browser): a >240-character path is refused with the
  * plain-English message; a genuinely locked file fails per-file while the
- * rest of its batch updates and verifies.
+ * rest of its batch updates and verifies; a batch whose ORIGINAL value
+ * contained line breaks refuses its undo with undo_blocked (issue #4) while
+ * history keeps it undoable.
  *
  * Leaf 2.3.1 (screenshot polish): only the three frames the wave-6 Evidence
  * Collector flagged are re-shot. The seven ACCEPTED frames keep their
@@ -66,6 +68,7 @@ import {
   assertUiBuilt,
   exifDocFor,
   exifJson,
+  exifRun,
   lockFileForWrite,
   makeFixtureDir,
   makePhotoJpeg,
@@ -782,6 +785,45 @@ async function run() {
     fail(`Console write was not refused (got ${consoleRefusal.status} ${JSON.stringify(consoleRefusal.body).slice(0, 200)})`);
   }
   step('console-gate', 'write-shaped argv refused unsafe_tag over the API');
+
+  // Issue #4: a batch whose ORIGINAL value contained line breaks writes fine
+  // (the forward edit is an ordinary single-line set), but its undo can never
+  // run — the reverse write would have to put a multiline value back, which
+  // the engine's value guard refuses. The undo must refuse with its OWN code
+  // (undo_blocked, NOT the ArgBuildError mislabel unsafe_tag), and history
+  // must say so BEFORE the click while undoable stays true.
+  const blockedPng = await photos.put('undo-blocked.png');
+  const blockedSeed = photos.pathOf('undo-blocked-seed.txt');
+  // argv/argfile lines cannot carry embedded newlines, so the multiline
+  // original rides exiftool's -TAG<=file form, exactly like the unit red tests.
+  await writeFile(blockedSeed, 'first prompt line\nsecond prompt line', 'utf8');
+  const seedRun = exifRun([`-PNG:Description<=${blockedSeed}`, blockedPng]);
+  if (!/1 image files? updated/.test(seedRun.stdout)) {
+    fail(`The multiline seed did not take: ${JSON.stringify({ status: seedRun.status, stderr: seedRun.stderr.slice(0, 200) })}`);
+  }
+  const blockedPreview = await api.tryPost('/api/write/preview', {
+    files: [blockedPng],
+    edits: [{ tag: 'PNG:Description', op: 'set', value: 'now a single line' }],
+  });
+  if (blockedPreview.status !== 200) {
+    fail(`Blocked-batch preview failed: ${JSON.stringify(blockedPreview.body).slice(0, 300)}`);
+  }
+  const blockedExecute = await api.tryPost('/api/write/execute', { previewId: blockedPreview.body.preview.previewId });
+  if (blockedExecute.status !== 200 || blockedExecute.body?.outcome?.updated !== 1) {
+    fail(`Blocked-batch execute failed: ${JSON.stringify(blockedExecute.body).slice(0, 300)}`);
+  }
+  const blockedBatchId = blockedExecute.body.outcome.batchId;
+  const blockedUndo = await api.tryPost('/api/write/undo', { batchId: blockedBatchId });
+  if (blockedUndo.status !== 400 || blockedUndo.body?.code !== 'undo_blocked') {
+    fail(`The formerly-multiline undo was not refused with undo_blocked (got ${blockedUndo.status} ${JSON.stringify(blockedUndo.body).slice(0, 200)})`);
+  }
+  const blockedHistory = await api.tryGet('/api/write/history?limit=100');
+  const blockedEntry = (blockedHistory.body?.batches ?? []).find((b) => b.batchId === blockedBatchId);
+  if (blockedEntry === undefined) fail('The blocked batch never reached the history payload');
+  if (blockedEntry.undoBlocked !== true || blockedEntry.undoable !== true) {
+    fail(`History must flag the batch undoBlocked AND still undoable (got ${JSON.stringify({ undoBlocked: blockedEntry.undoBlocked, undoable: blockedEntry.undoable })})`);
+  }
+  step('undo-blocked', 'formerly-multiline batch refused undo_blocked; history says undoBlocked + undoable');
 
   // ---- evidence snapshot (app/evidence/ is gitignored) ------------------------
   await rm(SNAPSHOT_DIR, { recursive: true, force: true }).catch(() => undefined);

@@ -35,6 +35,7 @@ const HELP_SECTIONS: Array<{ panel: string; lines: string[] }> = [
       'Undo reverses a change from the journal\'s before-values: the old text goes back, tags that were added are removed. It is a normal write, so it previews first and keeps a fresh backup.',
       'History shows every batch with a backup "verified" chip. "Restore last batch" is one click; undoing the same batch twice is refused (it would re-apply the change).',
       'The nuclear option — "Restore _original files" — reverts EVERYTHING since first contact, not just the last batch. It is labeled and confirmed twice for that reason.',
+      'If a batch\'s original value contained line breaks, it cannot be undone automatically — its History card says so — and the way back is the first-generation _original backup: "Restore _original files" puts the pre-edit bytes back.',
     ],
   },
   {

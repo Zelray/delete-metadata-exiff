@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import type { InjectOptions, InjectPayload } from 'light-my-request';
 import { loadConfig } from '../../src/config.js';
 import { buildServer, type BuildServerResult } from '../../src/index.js';
+import { runOnce } from '../../src/engine/exiftoolSession.js';
 import {
   makePipeline,
   makeWriteFixture,
@@ -212,6 +213,54 @@ describe('undo + history', () => {
 
     const second = await inject('/api/write/undo', { method: 'POST', body: { batchId, confirm: true } });
     expect(second.statusCode).toBe(400);
+  });
+
+  // Issue #4: the undo of a batch whose ORIGINAL value contained line breaks
+  // can never run — the reverse write would have to put a multiline value
+  // back, which the engine's value guard refuses. The route must name the
+  // real cause (undo_blocked), not mislabel it unsafe_tag with the misleading
+  // "pick it from the friendly field list" hint.
+  it('reports undo_blocked (not unsafe_tag) when undoing a batch whose original value had line breaks', async () => {
+    await inject('/api/session/unlock', { method: 'POST', body: {} });
+    const png = await fixture.put('routes-undo-blocked.png');
+    // argv/argfile lines cannot carry embedded newlines, so the multiline
+    // seed rides exiftool's -TAG<=file form — the way a real generator's
+    // multiline prompt lands in PNG:Description.
+    const seedFile = fixture.pathOf('routes-undo-blocked-seed.txt');
+    await writeFile(seedFile, 'first prompt line\nsecond prompt line', 'utf8');
+    const seed = await runOnce(EXE_PATH, [`-PNG:Description<=${seedFile}`, png], { timeoutMs: 30_000 });
+    expect(seed.stdout).toMatch(/1 image files? updated/);
+
+    // The forward edit is ordinary: single line in, previewed, executed.
+    const preview = await inject('/api/write/preview', {
+      method: 'POST',
+      body: { files: [png], edits: [{ tag: 'PNG:Description', op: 'set', value: 'now a single line' }] },
+    });
+    expect(preview.statusCode).toBe(200);
+    const executed = await inject('/api/write/execute', {
+      method: 'POST',
+      body: { previewId: preview.body.preview.previewId },
+    });
+    expect(executed.statusCode).toBe(200);
+    expect(executed.body.outcome.updated).toBe(1);
+    const batchId = executed.body.outcome.batchId;
+
+    // Step 1 of the two-step undo (no confirm) refuses with the dedicated
+    // code. RED today: 400 with code 'unsafe_tag'.
+    const undoPreview = await inject('/api/write/undo', { method: 'POST', body: { batchId } });
+    expect(undoPreview.statusCode).toBe(400);
+    expect(undoPreview.body.code).toBe('undo_blocked');
+
+    // The history payload says so BEFORE the click too — the additive field
+    // rides the existing history spread, and undoable stays true (there IS
+    // something to undo; it just cannot be auto-undone).
+    const history = await inject('/api/write/history');
+    const entry = history.body.batches.find((b: { batchId: string }) => b.batchId === batchId);
+    // C6: assert the entry we fetched, not that one exists — a wrong or missing
+    // batch both fail here, with the batchId naming what went wrong.
+    expect(entry?.batchId).toBe(batchId);
+    expect(entry.undoBlocked).toBe(true);
+    expect(entry.undoable).toBe(true);
   });
 
   it('refuses undo while read-only', async () => {

@@ -187,6 +187,55 @@ describe('undo plan', () => {
     // Created tag -> the undo deletes it.
     expect(plan[1]?.edits).toEqual([{ tag: 'XMP-dc:Title', op: 'delete' }]);
   });
+
+  // Issue #4: a batch whose before-value contained line breaks HAS something
+  // to undo (the reverse edit exists in the plan), but that reverse write can
+  // never be built — the engine refuses multiline values. The history view
+  // must say so up front: undoBlocked true, while undoable stays TRUE (a
+  // flipped undoable would make the UI's "nothing to undo" badge lie).
+  it('marks a multiline-before batch undoBlocked while it stays undoable', async () => {
+    await journal.recordBatchStart({
+      batchId: 'wb_undo_blocked',
+      mode: 'edit',
+      description: 'multiline before-value',
+      files: ['C:\\p\\m1.png'],
+      argv: [],
+      edits: [{ tag: 'PNG:Description', op: 'set', value: 'single line' }],
+    });
+    await journal.recordIntent({
+      batchId: 'wb_undo_blocked',
+      filePath: 'C:\\p\\m1.png',
+      edits: [{ tag: 'PNG:Description', op: 'set', value: 'single line' }],
+      before: { 'PNG:Description': 'first line\nsecond line' },
+      expectedAfter: { 'PNG:Description': 'single line' },
+      diffs: [
+        { tag: 'PNG:Description', before: 'first line\nsecond line', after: 'single line', kind: 'change' },
+      ],
+    });
+    await journal.recordResult({
+      batchId: 'wb_undo_blocked',
+      filePath: 'C:\\p\\m1.png',
+      outcome: { filePath: 'C:\\p\\m1.png', status: 'updated', warnings: [], errors: [], verified: true },
+    });
+    await journal.recordBatchEnd({
+      batchId: 'wb_undo_blocked',
+      summary: { updated: 1, unchanged: 0, failed: 0, allVerified: true },
+    });
+
+    // The plan genuinely exists — restoring that multiline value is exactly
+    // what the undo can never write back.
+    const plan = await journal.undoPlan('wb_undo_blocked');
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.edits).toEqual([
+      { tag: 'PNG:Description', op: 'set', value: 'first line\nsecond line' },
+    ]);
+
+    const history = await journal.batchHistory('wb_undo_blocked');
+    // RED today: undoBlocked does not exist on the history view yet.
+    expect(history?.undoBlocked).toBe(true);
+    // Deliberate: undoable stays true — the additive flag carries the block.
+    expect(history?.undoable).toBe(true);
+  });
 });
 
 describe('backup verification (Verified chips)', () => {

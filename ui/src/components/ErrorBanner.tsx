@@ -17,6 +17,12 @@ const RECOVERY_HINTS: Partial<Record<ApiErrorCode, string>> = {
   engine_version_unsupported: 'This exiftool version is too old for MetaDesk. Update the bundled copy.',
   preview_required: 'MetaDesk previews before it changes anything — open the action again to build the preview.',
   unsafe_tag: 'That tag is not safe to change here. Pick it from the friendly field list instead.',
+  // Issue #4: the undo of a formerly-multiline value can never run. This hint
+  // names the way back (the first-generation backup), never the field-list
+  // hint above, which does not apply here.
+  undo_blocked:
+    'The data is not lost: the file\'s first-generation _original backup still holds the pre-edit bytes. ' +
+    '\'Restore _original files\' in History restores it (it reverts everything since first contact, not just this batch).',
   internal_error: 'Something failed inside MetaDesk. Retry; if it repeats, copy the diagnostics bundle from Settings.',
 };
 

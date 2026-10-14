@@ -7,6 +7,8 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useWriteRunner } from '../write/useWriteRun';
 import type { HistoryBatch } from '../write/types';
+// Undo-honesty copy (issue #4) lives in copy.ts; this view adds no JSX literals.
+import { UNDO_BLOCKED_BADGE, UNDO_BLOCKED_BADGE_TONE, UNDO_BLOCKED_TITLE, UNDO_TWO_STEP_TITLE } from '../write/copy';
 import { basename, formatDateTime } from '../lib/format';
 
 /**
@@ -99,7 +101,9 @@ export function HistoryView() {
     }
   };
 
-  const lastUndoable = useMemo(() => batches?.find((batch) => batch.undoable && !batch.interrupted), [batches]);
+  // Issue #4: a blocked batch (its original value had line breaks) is skipped
+  // here too — the chip must not invite a click the undo can never honor.
+  const lastUndoable = useMemo(() => batches?.find((batch) => batch.undoable && !batch.undoBlocked && !batch.interrupted), [batches]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-6">
@@ -236,6 +240,9 @@ function BatchCard({
   onNuclear: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Issue #4: a blocked batch's undo can never run, so the button is disabled
+  // and the tooltip says why — every string here comes from copy.ts (C3/C4).
+  const undoTitle = batch.undoBlocked ? UNDO_BLOCKED_TITLE : UNDO_TWO_STEP_TITLE;
   const withBackups = batch.backups;
   const allVerified = withBackups.length > 0 && withBackups.every((row) => row.verified);
   const someUnverified = withBackups.some((row) => !row.verified);
@@ -271,6 +278,9 @@ function BatchCard({
         ) : (
           <Badge tone="neutral">no backups</Badge>
         )}
+        {/* Issue #4: says the block BEFORE the click; "nothing to undo" stays
+            reserved for batches with a genuinely empty undo plan. */}
+        {batch.undoBlocked && <Badge tone={UNDO_BLOCKED_BADGE_TONE}>{UNDO_BLOCKED_BADGE}</Badge>}
         {!batch.undoable && !batch.interrupted && <Badge tone="neutral">nothing to undo</Badge>}
       </button>
 
@@ -332,9 +342,9 @@ function BatchCard({
             <Button
               size="sm"
               variant="primary"
-              disabled={!batch.undoable || batch.interrupted || undoBusy}
+              disabled={!batch.undoable || batch.undoBlocked || batch.interrupted || undoBusy}
               onClick={onUndo}
-              title="Two-step: first the reverse diff, then your confirm. Undoing twice is refused by design."
+              title={undoTitle}
             >
               Restore this change (undo)
             </Button>

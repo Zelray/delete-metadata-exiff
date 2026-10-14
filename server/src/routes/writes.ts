@@ -553,11 +553,16 @@ function mapWriteError(error: unknown): MappedError {
         return { statusCode: 409, code: 'preview_required', message: error.message };
       case 'destructive_confirmation_required':
         return { statusCode: 403, code: 'unsafe_tag', message: error.message };
+      // Issue #4: the undo of a formerly-multiline value can never be built.
+      // It is a 400 under its OWN code — never the ArgBuildError mislabel into
+      // unsafe_tag below, whose field-list hint would mislead. Kept to one
+      // line, and the shared return below now serves `default` directly, so
+      // this file stays at its ratcheted code-line allowance.
+      case 'undo_blocked': return { statusCode: 400, code: 'undo_blocked', message: error.message };
       case 'batch_too_large':
       case 'validation':
       case 'undo_unavailable':
       case 'already_undone':
-        return { statusCode: 400, code: 'bad_request', message: error.message };
       default:
         return { statusCode: 400, code: 'bad_request', message: error.message };
     }

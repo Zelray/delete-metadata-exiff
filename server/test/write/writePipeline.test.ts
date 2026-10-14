@@ -10,8 +10,9 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { WritePipelineError } from '../../src/services/writePipeline.js';
+import { runOnce } from '../../src/engine/exiftoolSession.js';
 import { holdFileOpen, makePipeline, makeWriteFixture, waitForMarker, writeSdMetadata, readTagsOnce, type PipelineHarness, type WriteFixture } from './helpers.js';
-import { PNG_1X1 } from '../helpers.js';
+import { EXE_PATH, PNG_1X1 } from '../helpers.js';
 
 const sha256 = (data: Buffer | string): string => createHash('sha256').update(data).digest('hex');
 const readBytes = (filePath: string): Promise<Buffer> => readFile(filePath);
@@ -391,6 +392,52 @@ describe('undo', () => {
     expect(after['PNG:Description']).toBe('a cozy cabin in the woods, generated art');
 
     await expect(harness.pipeline.undoBatch(batchId)).rejects.toMatchObject({ code: 'already_undone' });
+  });
+
+  // Issue #4: a batch whose ORIGINAL value contained line breaks writes fine
+  // (the forward edit is a plain single-line set), but its undo can never run
+  // — the reverse write would have to put a multiline value back, which the
+  // engine's value guard refuses. An undo that can never work must say so
+  // with its own truthful code at the undo boundary, on BOTH steps, instead
+  // of escaping as a raw guard error the route mislabels unsafe_tag.
+  it('blocks both undo steps of a formerly-multiline value with undo_blocked', async () => {
+    const file = await fixture.put('undo-multiline.png');
+    // argv/argfile lines cannot carry embedded newlines, so the multiline
+    // seed rides exiftool's -TAG<=file form — the way a real generator's
+    // multiline prompt lands in PNG:Description.
+    const seedFile = fixture.pathOf('undo-multiline-seed.txt');
+    await writeFile(seedFile, 'first prompt line\nsecond prompt line', 'utf8');
+    const seed = await runOnce(EXE_PATH, [`-PNG:Description<=${seedFile}`, file], { timeoutMs: 30_000 });
+    expect(seed.stdout).toMatch(/1 image files? updated/);
+
+    // The forward edit is ordinary and succeeds — this is the batch whose
+    // undo must be blocked.
+    const env = await harness.pipeline.preview({
+      files: [file],
+      edits: [{ tag: 'PNG:Description', op: 'set', value: 'now a single line' }],
+    });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    expect(res.outcome.files[0]?.status).toBe('updated');
+    expect(res.outcome.files[0]?.verified).toBe(true);
+    const batchId = res.outcome.batchId;
+
+    // Step 1 (the reverse-diff preview) and step 2 (the confirmed undo) both
+    // refuse with the dedicated code — RED today: they reject as a raw
+    // ArgBuildError ('newline-in-value') with no undo-specific code at all.
+    // The rejection is caught and its code asserted as a plain value (not
+    // .rejects.toMatchObject) so the pre-change failure surfaces as an
+    // AssertionError — proven-red accepts only assertion evidence, never a
+    // raw crash, as proof this test can catch the bug.
+    const prepareCode = await harness.pipeline.prepareUndo(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(prepareCode).toBe('undo_blocked');
+    const undoCode = await harness.pipeline.undoBatch(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(undoCode).toBe('undo_blocked');
   });
 });
 

@@ -14,6 +14,7 @@ export type ApiErrorCode =
   | 'engine_unavailable'
   | 'engine_version_unsupported'
   | 'preview_required'
+  | 'undo_blocked'
   | 'unsafe_tag'
   | 'internal_error';
 
