@@ -424,8 +424,20 @@ describe('undo', () => {
     // Step 1 (the reverse-diff preview) and step 2 (the confirmed undo) both
     // refuse with the dedicated code — RED today: they reject as a raw
     // ArgBuildError ('newline-in-value') with no undo-specific code at all.
-    await expect(harness.pipeline.prepareUndo(batchId)).rejects.toMatchObject({ code: 'undo_blocked' });
-    await expect(harness.pipeline.undoBatch(batchId)).rejects.toMatchObject({ code: 'undo_blocked' });
+    // The rejection is caught and its code asserted as a plain value (not
+    // .rejects.toMatchObject) so the pre-change failure surfaces as an
+    // AssertionError — proven-red accepts only assertion evidence, never a
+    // raw crash, as proof this test can catch the bug.
+    const prepareCode = await harness.pipeline.prepareUndo(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(prepareCode).toBe('undo_blocked');
+    const undoCode = await harness.pipeline.undoBatch(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(undoCode).toBe('undo_blocked');
   });
 });
 
