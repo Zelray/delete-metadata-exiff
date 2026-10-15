@@ -9,7 +9,7 @@ Everything runs on this machine.
 
 ## Getting MetaDesk onto a PC
 
-You get MetaDesk as a single zip file (`metadesk-1.0.0-portable-win-x64.zip`). There is no
+You get MetaDesk as a single zip file (`metadesk-1.0.1-portable-win-x64.zip`). There is no
 installer wizard and no website account — for this release the zip is passed along directly.
 
 1. **Put the zip somewhere you want to keep it** (your Desktop or a `MetaDesk` folder is
@@ -27,7 +27,7 @@ installer wizard and no website account — for this release the zip is passed a
    bad". If you got the zip from a source you trust: click **More info**, then **Run
    anyway**. You only do this once — Windows remembers. If you want to double-check the
    file you were given before running it, the release notes that come with the zip (in the
-   source folder they live at `docs\release\RELEASE-NOTES-v1.0.0.md`) list the fingerprint
+   source folder they live at `docs\release\RELEASE-NOTES-v1.0.1.md`) list the fingerprint
    (SHA-256) of every file that shipped, and your PC can compute the same fingerprint to
    compare.
 
@@ -50,7 +50,7 @@ those either.) This update path is rehearsed by an automated check on every rele
 
 To verify a downloaded zip before running it, compare its SHA-256 fingerprint with the one
 in the release notes that come with the release
-(`docs\release\RELEASE-NOTES-v1.0.0.md` in the source folder).
+(`docs\release\RELEASE-NOTES-v1.0.1.md` in the source folder).
 
 ## Starting MetaDesk
 
@@ -108,5 +108,5 @@ your current values first, so they survive even if the backups are deleted.
 
 More for contributors and build agents: `STATUS.md` (one-glance chart), `HANDOFF.md` and
 `HANDOFF-V1.md` (deep technical handoffs — V1 is the release runbook),
-`docs\release\RELEASE-NOTES-v1.0.0.md` (the release record), `CLAUDE.md` (working rules
+`docs\release\RELEASE-NOTES-v1.0.1.md` (the release record), `CLAUDE.md` (working rules
 for agent sessions).

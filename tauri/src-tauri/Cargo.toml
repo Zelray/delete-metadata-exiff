@@ -1,6 +1,6 @@
 [package]
 name = "metadesk-shell"
-version = "1.0.0"
+version = "1.0.1"
 description = "MetaDesk desktop shell: owns the bundled engine's lifecycle (leaf 2.1.1)"
 edition = "2021"
 rust-version = "1.77.2"

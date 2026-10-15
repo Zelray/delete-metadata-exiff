@@ -191,6 +191,15 @@ final build ran as `build-portable.mjs --all` (provenance generated 2026-10-05T2
 all gates green the same day, including both run-clean-machine modes; tag `v1.0.0` on the
 release commit (hash recorded in the leaf-2.2.3 report / `git tag --list`).
 
+**State of record at v1.0.1 (2026-10-15):** version stamped 1.0.1 in the three files and
+release records updated in the release commit tagged `v1.0.1` (hash via `git tag --list`
+/ GitHub Releases); gate ladder 8/8 green, then `build-portable.mjs --all` (provenance
+generated 2026-10-15T18:22:49Z), then verify-package + verify-e2e all --packaged +
+run-clean-machine + run-clean-machine update all green the same day. Distributed as a
+GitHub Release (zip + manifest + provenance + NSIS setup attached) — §4 step 8's
+"no push (no remote)" predates the GitHub remote and is superseded for releases from
+v1.0.1 on: the release commit and tag are pushed to `origin`.
+
 ## 5. How to bump the pinned Node runtime
 
 The pin lives in the header of `app/scripts/fetch-node.mjs` (constants

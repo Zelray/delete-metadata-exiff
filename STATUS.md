@@ -1,6 +1,10 @@
 # MetaDesk — STATUS (one-glance chart)
 
-Updated: 2026-10-09 (v1.0.0 released; arch-v11 leaves 1.1 `97511ff`+`421219b`, 1.2 `b747379`+`572b97c`+`cb8eb6c`, 1.3 destructive leaf-kit `590a465` + docs, 1.4 UI write-fire consolidation `4482a9c`+`43512fa`, 1.4b dependency pass `f9fac34`+`73f5f67`, 1.5 session-scoped batch in flight `077847c`+`7730292`, 1.6 client.ts transport `665ef7a`+`4ea1711`, 1.7 lifecycle contract explicit `6be166b` + docs, 1.8 exif path-key kit `467598b` + docs, 1.9 honesty rider (candidate 9 selector DEFERRED w/ recorded triggers — THE LAST CARD; series COMPLETE) `a10631c` + docs — all committed, all gates green, npm audit 0; **leaves 1.5–1.9 PUSHED on Mike's word (1.5–1.7 on 2026-10-07, 1.8 on 2026-10-08, 1.9 on 2026-10-09)**). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`; **next work: the v1.1 feature backlog per `..\HANDOFF-ARCH-V11-COMPLETE.md` (repo root)**.
+Updated: 2026-10-15 (**v1.0.1 released** — issues #3 + #4 honesty fixes landed via PRs
+#5/#6 merged to `main`; runbook §4 executed: gate ladder 8/8, `build-portable --all`,
+`verify-package`, `verify-e2e all --packaged`, `run-clean-machine` + `… update` all green;
+tag `v1.0.1`; published on GitHub Releases with zip + manifest + provenance. Prior chart
+state: 2026-10-09, v1.0.0 released; arch-v11 leaves 1.1 `97511ff`+`421219b`, 1.2 `b747379`+`572b97c`+`cb8eb6c`, 1.3 destructive leaf-kit `590a465` + docs, 1.4 UI write-fire consolidation `4482a9c`+`43512fa`, 1.4b dependency pass `f9fac34`+`73f5f67`, 1.5 session-scoped batch in flight `077847c`+`7730292`, 1.6 client.ts transport `665ef7a`+`4ea1711`, 1.7 lifecycle contract explicit `6be166b` + docs, 1.8 exif path-key kit `467598b` + docs, 1.9 honesty rider (candidate 9 selector DEFERRED w/ recorded triggers — THE LAST CARD; series COMPLETE) `a10631c` + docs — all committed, all gates green, npm audit 0; **leaves 1.5–1.9 PUSHED on Mike's word (1.5–1.7 on 2026-10-07, 1.8 on 2026-10-08, 1.9 on 2026-10-09)**). Detailed handoff: `HANDOFF.md`; release runbook: `HANDOFF-V1.md`; **next work: the v1.1 feature backlog per `..\HANDOFF-ARCH-V11-COMPLETE.md` (repo root)**.
 Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/metagui-phase2/BUILD-NOTES.md`.
 
 ## Patient chart
@@ -28,6 +32,7 @@ Build contract of record: `../.unlazy/metagui/BUILD-NOTES.md` + `../.unlazy/meta
 | End-to-end oracles + Playwright visual matrix (10 real-flow screenshots) | DONE | `node app/scripts/verify-e2e.mjs all` → "all e2e verifications passed" (leaf 1.2.1); root gates G3/G4 MET with bound evidence |
 | Desktop wrap (own window, tray, Explorer drag-drop with real paths, single-instance, crash dialog, portable package) | WORKING | `node app/scripts/verify-desktop.mjs bundle\|shell\|matrix` → "desktop … verification passed" (leaves 2.1.1/2.1.2); `node app/scripts/verify-package.mjs` → "package verification passed" (leaf 2.2.2); `node app/scripts/run-clean-machine.mjs` → "clean-machine drill passed" (leaf 2.2.3) |
 | Release v1.0.0 (clean-machine smoke, update rehearsal, release records, tag) | DONE (zip + NSIS built; provenance hashes published; tag `v1.0.0`) | `node app/scripts/run-clean-machine.mjs` + `… update` → "clean-machine drill passed" / "update rehearsal passed"; `docs/release/RELEASE-NOTES-v1.0.0.md`; runbook `HANDOFF-V1.md` (leaf 2.2.3) |
+| Release v1.0.1 (issues #3 + #4 honesty fixes: per-file read status in verify; `undo_blocked` + honest UI for multiline-batch undo — PRs #5/#6) | DONE (zip + NSIS rebuilt from `main`; provenance hashes published on GitHub Releases; tag `v1.0.1`) | full runbook §4: gate ladder 8/8 green → `build-portable --all` → `verify-package` + `verify-e2e all --packaged` + `run-clean-machine` + `… update` all green 2026-10-15; `docs/release/RELEASE-NOTES-v1.0.1.md` |
 
 ## How to start it
 
