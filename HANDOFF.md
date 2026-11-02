@@ -951,3 +951,32 @@ Gotchas for the next agent:
   addition to it must delete its own footprint.
 - Proven-red evidence (3x AssertionError pre-change) recorded verbatim in
   `.unlazy/candidates-2026-11-02/GATES.md` C1-G1.
+
+### 10.2 C2 — the file-set module (issue #16, committed on local main)
+
+New `ui/src/lib/fileSet.ts` (pure, colocated test) is the ONE owner of "which
+files am I operating on":
+- `filterByName(entries, searchText)` — the one case-insensitive name
+  predicate (was 3 file-scope copies; leaf-1.9 census now pins ZERO in views,
+  DetailViewer tag-row waiver stays at its measured 1).
+- `hasGps/hasCopyright(entry, badges)` — ONE badge truth: session-learned
+  store badge OVERRIDES the scan-time warning; the warning is the fallback
+  for unlearned files.
+- `fileSet({entries, selectedPaths, searchText}, {mode, badges?, chips?,
+  cap?})` — scope derivation; mode 'selection' (BatchPanel toggle),
+  'filtered', 'auto' (ScrubWizard selection-else-filtered); `truncated` is
+  measured PRE-cap (mirrors the server cap's own semantics).
+
+TWO deliberate behavior upgrades (both tested, both the point of the
+candidate): FileGrid's badge filter now falls back to scan-time truth for
+files the session has not learned about (a scan-flagged GPS file matches the
+GPS filter without being clicked first); BatchPanel's condition chips now see
+session-learned badge overrides (it subscribes to `badges` now).
+
+NOT absorbed, deliberately: ResultsReport retry stays on server-minted
+`retryFilePaths` (nothing to derive); `MAX_SCRUB_FILES = 1000` stays in
+ScrubWizard (the module takes `cap` as a parameter, so the wizard+server
+echo pin is unchanged); FileGrid's sort stays a display concern.
+
+Gotcha: BatchPanel's date-shift cap (`DATE_SHIFT_CAP = 200`) is a date-shift
+policy, NOT a file-set cap — do not move it into the module.
