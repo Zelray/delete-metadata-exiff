@@ -980,3 +980,69 @@ echo pin is unchanged); FileGrid's sort stays a display concern.
 
 Gotcha: BatchPanel's date-shift cap (`DATE_SHIFT_CAP = 200`) is a date-shift
 policy, NOT a file-set cap — do not move it into the module.
+
+### 10.3 C4 — one portfile reader for the Node side (issue #17, local main)
+
+New `scripts/lib/portfile.mjs` (+ `portfile.d.mts` type shim for the vite
+import; + `quality/portfile.test.mjs` in the gates framework lane): the ONE
+read-and-validate interface for the server's portfile on the tooling side.
+- `readPortfile(filePath)` — field rules as behaviour: port/pid positive
+  integers, token/url non-empty strings; null for absent/malformed/invalid;
+  never throws; extra fields (startedAt/engine) ride along.
+- `pollPortfile(filePath, {timeoutMs, intervalMs=250, abort, accept})` — one
+  poll loop; resolves payload / null on quiet timeout (caller owns the
+  failure message) / THROWS the abort reason (child exited; aborting beats
+  timing out); `accept` keeps verify-desktop's stale-seed admission policy.
+
+Consumers rewired (8): verify-launch, verify-server, verify-e2e,
+tests-e2e/matrix, verify-desktop (5 sites: staged-server boot, shell boot,
+single-instance after-read, bootShell, slow-boot case 4), verify-package,
+run-clean-machine (clean + update), ui/vite.config.ts (private fifth
+interface deleted). Orphans deleted: three readJsonSafe copies, two local
+pollPortfile defs, two sleep helpers. DELIBERATELY untouched: bin/metadesk.mjs
+and the Rust shell — the two pinned adapters that justify the seam; parity
+stays forbidden (contract).
+
+STRICTNESS upgrades (deliberate): token non-empty + pid/url validated
+everywhere (three gates previously dereferenced unchecked); abort now fails
+with the root cause ("MetaDesk.exe exited early with code N") instead of
+pollFor's combined "(extra)" suffix.
+
+RULE AMENDMENT (self-improvement protocol, disclosed): `launch-runtime-import`
+(quality/contracts.mjs) flagged any non-builtin specifier under bin|scripts,
+which banned the first-party relative import the review itself requires.
+Narrowed to BARE (npm-package) specifiers; relative first-party imports are
+exempt; the ratcheted esbuild identity still trips. Reason recorded here per
+C7/M1: MD6 guards against runtime DEPENDENCIES, not first-party modules.
+
+### 10.4 C5 — one process-accounting kit (issue #18, local main)
+
+New `scripts/lib/processes.mjs` (+ `quality/processes.test.mjs` in the gates
+framework lane) owns what used to be ~250 hand-mirrored lines x3:
+`processPids`, `processTree`, `listProcesses` (the control-char-flatten
+lesson as behaviour), `listeningSockets`, `closeMainWindow` (pid-first +
+name fallback, ONE Add-Type namespace; verify-desktop previously closed ANY
+MetaDesk window by name — its two call sites now pass their child pid),
+`assertNoNewProcesses`/`newPids`, `waitForQuietMachine`, `busyProcesses`,
+`runCapture`, `runPowerShell` (labeled), `pwsq`.
+
+- **`SIBLING_JOB_PATTERN` is the ONE canonical busy-sibling list** (the union
+  of all three gates' old lists). THE LIVE BUG IS FIXED: verify-desktop now
+  waits out verify-package / build-portable / run-clean-machine and vice
+  versa. A new gate adds its marker THERE.
+- Gates thread `onNote` to keep their own chatter format.
+- Orphans removed: runCapture (run-clean), busyProcesses import
+  (verify-desktop — no direct caller), 3x runCapture/runPowerShell/pwsq
+  copies. Net ratchet: process-argv 16->14, no-control-regex 5->3 (locked);
+  two moved identities re-based onto scripts/lib/processes.mjs by REVIEWED
+  HAND EDIT of .quality-baseline.json (C7 --update refused: increases need a
+  reason; reason: the code MOVED here from three deleted copies).
+- Gates now under lib imports: verify-desktop 1186->975 lines,
+  verify-package 790->594, run-clean-machine 848->640.
+
+Proof: quality/processes.test.mjs 6/6 (incl. the canonical-list regression
+test), then ALL THREE heavyweight gates green end-to-end serially:
+package verification passed / desktop lifecycle matrix verification passed
+/ clean-machine drill passed. Note for the next runner: a leftover running
+MetaDesk.exe from manual drills fails these gates by design (single-instance
+reflex, "exited early with code 0") — close it first.
