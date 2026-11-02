@@ -6,6 +6,7 @@ import { EmptyState } from '../components/EmptyState';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useWriteRunner } from '../write/useWriteRun';
+import type { PreviewGroup } from '../components/SaveReviewModal';
 import type { HistoryBatch } from '../write/types';
 // Undo-honesty copy (issue #4) lives in copy.ts; this view adds no JSX literals.
 import { UNDO_BLOCKED_BADGE, UNDO_BLOCKED_BADGE_TONE, UNDO_BLOCKED_TITLE, UNDO_TWO_STEP_TITLE } from '../write/copy';
@@ -54,24 +55,26 @@ export function HistoryView() {
     setUndoBusy(true);
     setUndoError(null);
     try {
-      // Step 1 of the two-step undo: show exactly what the reverse write does.
-      const preview = await previewUndo(batch.batchId);
+      // Step 1 of the two-step undo: the COMPLETE plan (issue #15) — every
+      // reverse-write group, each with its real preview. The confirm screen
+      // shows all of them; the server will execute exactly these previews and
+      // nothing else.
+      const plan = await previewUndo(batch.batchId);
       setUndoTarget(null);
-      runner.review(
-        [
-          {
-            label: `Undo: restore ${preview.undoPreview.files.length} file(s) to their pre-edit values`,
-            evidence: 'previewed',
-            preview: preview.undoPreview,
-            commandPreview: preview.commandPreview,
-          },
-        ],
-        {
-          kind: 'undo',
-          title: `Undo review — what “${batch.description || 'this batch'}” changed goes back`,
-          undoBatchId: batch.batchId,
-        },
-      );
+      const groups: PreviewGroup[] = plan.groups.map((group, index) => ({
+        label:
+          plan.groups.length > 1
+            ? `Undo part ${index + 1} of ${plan.groups.length}: restore ${group.files.length} file(s) to their pre-edit values`
+            : `Undo: restore ${group.files.length} file(s) to their pre-edit values`,
+        evidence: 'previewed',
+        preview: group.preview,
+        commandPreview: group.commandPreview,
+      }));
+      runner.review(groups, {
+        kind: 'undo',
+        title: `Undo review — what “${batch.description || 'this batch'}” changed goes back`,
+        undoBatchId: batch.batchId,
+      });
     } catch (cause) {
       setUndoError(cause);
     } finally {

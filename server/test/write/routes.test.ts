@@ -204,12 +204,19 @@ describe('undo + history', () => {
     const undoPreview = await inject('/api/write/undo', { method: 'POST', body: { batchId } });
     expect(undoPreview.statusCode).toBe(200);
     expect(undoPreview.body.requiresConfirmation).toBe(true);
-    expect(undoPreview.body.undoPreview.previewId).toMatch(/^pv_/);
+    // Issue #15: step 1 returns the COMPLETE plan (every group, each with its
+    // real preview); step 2 executes exactly those prepared previews.
+    expect(undoPreview.body.groups).toHaveLength(1);
+    const preparedId = undoPreview.body.groups[0]?.preview?.previewId;
+    expect(preparedId).toMatch(/^pv_/);
+    expect(undoPreview.body.totalFiles).toBe(1);
 
     const undone = await inject('/api/write/undo', { method: 'POST', body: { batchId, confirm: true } });
     expect(undone.statusCode).toBe(200);
     expect(undone.body.undone).toBe(true);
     expect(undone.body.batches[0]?.outcome.files[0]?.verified).toBe(true);
+    // The executed preview is the one the human saw.
+    expect(undone.body.batches[0]?.previewId).toBe(preparedId);
 
     const second = await inject('/api/write/undo', { method: 'POST', body: { batchId, confirm: true } });
     expect(second.statusCode).toBe(400);

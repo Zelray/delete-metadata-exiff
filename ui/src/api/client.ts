@@ -28,7 +28,7 @@ import type {
   ScrubPreviewResponse,
   SessionModeResult,
   TagEdit,
-  UndoPreviewResponse,
+  UndoPlanResponse,
   UndoResultResponse,
   WriteExecuteResponse,
   WriteHistoryResponse,
@@ -470,9 +470,9 @@ export async function executeWrite(
   return result.complete;
 }
 
-/** POST /api/write/undo step 1 (no confirm): the reverse-write diff. */
-export function previewUndo(batchId: string): Promise<UndoPreviewResponse> {
-  return request<UndoPreviewResponse>('/api/write/undo', {
+/** POST /api/write/undo step 1 (no confirm): the COMPLETE reverse-write plan. */
+export function previewUndo(batchId: string): Promise<UndoPlanResponse> {
+  return request<UndoPlanResponse>('/api/write/undo', {
     method: 'POST',
     body: JSON.stringify({ batchId }),
   }).then((result) => {

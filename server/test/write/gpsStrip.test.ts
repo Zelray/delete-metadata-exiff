@@ -128,11 +128,14 @@ describe('GPS-strip destructive channel', () => {
     expect(sha256(await readFile(`${png}_original`))).toBe(sha256(PNG_1X1));
 
     // UNDO through the ordinary journal (no phrase needed — restoring is not
-    // destroying), then an independent read proves every value came back.
+    // destroying). Issue #15: the confirmed step requires the prepared plan,
+    // so the two-step dance is exercised even at pipeline level. An
+    // independent read then proves every value came back.
+    await harness.pipeline.prepareUndo(batchId);
     const undo = await harness.pipeline.undoBatch(batchId);
-    expect(undo.results).toHaveLength(1);
-    expect(undo.results[0]?.outcome.files[0]?.status).toBe('updated');
-    expect(undo.results[0]?.outcome.files[0]?.verified).toBe(true);
+    expect(undo.batches).toHaveLength(1);
+    expect(undo.batches[0]?.outcome.files[0]?.status).toBe('updated');
+    expect(undo.batches[0]?.outcome.files[0]?.verified).toBe(true);
 
     const restoredDoc = await readTagsOnce(png, []);
     const restoredKeys = Object.keys(restoredDoc).filter(

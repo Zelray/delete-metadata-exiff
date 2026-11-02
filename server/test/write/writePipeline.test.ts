@@ -376,15 +376,15 @@ describe('undo', () => {
     expect(res.outcome.files[0]?.status).toBe('updated');
     const batchId = res.outcome.batchId;
 
-    // Two-step undo: preview, then confirm.
+    // Two-step undo: preview (the complete plan — issue #15), then confirm.
     const undoEnvelope = await harness.pipeline.prepareUndo(batchId);
-    expect(undoEnvelope.preview.files[0]?.diffs[0]).toMatchObject({
+    expect(undoEnvelope.groups[0]?.preview.files[0]?.diffs[0]).toMatchObject({
       tag: 'PNG:Description',
       before: 'edited description',
     });
     const undone = await harness.pipeline.undoBatch(batchId);
-    expect(undone.results.length).toBeGreaterThan(0);
-    const undoOutcome = undone.results[0]?.outcome;
+    expect(undone.batches.length).toBeGreaterThan(0);
+    const undoOutcome = undone.batches[0]?.outcome;
     expect(undoOutcome?.files[0]?.status).toBe('updated');
     expect(undoOutcome?.files[0]?.verified).toBe(true);
 
@@ -438,6 +438,98 @@ describe('undo', () => {
       (error) => (error as { code?: string }).code ?? 'no_code',
     );
     expect(undoCode).toBe('undo_blocked');
+  });
+
+  // Issue #15 (arch-review Candidate 1): a batch whose files carry DIFFERENT
+  // before-values fans out into one reverse-write group per distinct edit
+  // set. The confirm step must show EVERY group — today it previews only the
+  // first, so the human approves a slice while the server may write the rest.
+  // The planned interface is a complete plan envelope
+  // (groups[{preview,commandPreview}], totalFiles); until the fix lands the
+  // envelope has no `groups`, so the assertions below fail as AssertionErrors
+  // (the crash-safe Array.isArray guards), never as crashes — proven-red
+  // accepts only assertion evidence.
+  it('previews the COMPLETE undo plan — every group, not just the first', async () => {
+    const fileA = await fixture.put('undo-plan-a.png');
+    const fileB = await fixture.put('undo-plan-b.png');
+    // Two DIFFERENT original descriptions: the same forward edit produces two
+    // distinct reverse-edit sets, i.e. a two-group undo plan.
+    await writeSdMetadata(fileA); // Description: "a cozy cabin in the woods, generated art"
+    await runOnce(EXE_PATH, ['-PNG:Description=second original value', fileB], { timeoutMs: 30_000 });
+
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'same new description' }];
+    const env = await harness.pipeline.preview({ files: [fileA, fileB], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    expect(res.outcome.files.map((f) => f.status)).toEqual(['updated', 'updated']);
+    const batchId = res.outcome.batchId;
+
+    const plan = await harness.pipeline.prepareUndo(batchId);
+    const groups = Array.isArray((plan as { groups?: unknown }).groups)
+      ? ((plan as { groups: Array<{ preview: { previewId: string; files: Array<{ filePath: string }> } }> }).groups)
+      : [];
+    expect(groups.length).toBe(2);
+    expect(groups[0]?.preview.previewId).toMatch(/^pv_/);
+    expect(groups[1]?.preview.previewId).toMatch(/^pv_/);
+    // Every file of the batch appears across the plan's groups exactly once.
+    const plannedFiles = groups.flatMap((g) => g.preview.files.map((f) => f.filePath)).sort();
+    expect(plannedFiles).toEqual([fileA, fileB].sort());
+  });
+
+  // Issue #15: the confirmed undo must execute exactly the prepared previews
+  // — "what the human saw IS what ran" as structure, not promise. Each
+  // executed batch reports the preview id it ran; the ids equal the prepared
+  // plan's ids in order.
+  it('executes exactly the prepared previews — every group, confirmed ids only', async () => {
+    const fileA = await fixture.put('undo-run-a.png');
+    const fileB = await fixture.put('undo-run-b.png');
+    await writeSdMetadata(fileA);
+    await runOnce(EXE_PATH, ['-PNG:Description=second original value', fileB], { timeoutMs: 30_000 });
+
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'same new description' }];
+    const env = await harness.pipeline.preview({ files: [fileA, fileB], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    const batchId = res.outcome.batchId;
+
+    const plan = await harness.pipeline.prepareUndo(batchId);
+    const preparedIds = Array.isArray((plan as { groups?: unknown }).groups)
+      ? (plan as { groups: Array<{ preview: { previewId: string } }> }).groups.map((g) => g.preview.previewId)
+      : [];
+
+    const run = await harness.pipeline.undoBatch(batchId);
+    const batches = Array.isArray((run as { batches?: unknown }).batches)
+      ? (run as { batches: Array<Record<string, unknown>> }).batches
+      : [];
+    expect(batches.length).toBe(2);
+    const executedIds = batches.map((b) => (typeof b['previewId'] === 'string' ? b['previewId'] : '(none)'));
+    expect(executedIds).toEqual(preparedIds);
+
+    // Both groups actually ran: an independent read proves BOTH originals
+    // came back — today the second group still executes, but through a
+    // re-planned preview the human never saw.
+    const afterA = await readTagsOnce(fileA, ['PNG:Description']);
+    const afterB = await readTagsOnce(fileB, ['PNG:Description']);
+    expect(afterA['PNG:Description']).toBe('a cozy cabin in the woods, generated art');
+    expect(afterB['PNG:Description']).toBe('second original value');
+  });
+
+  // Issue #15: with no prepared plan (step 1 skipped, or the server restarted
+  // between the two steps), the confirmed step must REFUSE — never execute a
+  // write the human was never shown. Today it happily re-plans and executes
+  // standalone, so this fails as 'no_error' !== the dedicated code.
+  it('refuses to execute an undo that was never previewed (undo_preview_required)', async () => {
+    const file = await fixture.put('undo-unprepared.png');
+    await writeSdMetadata(file);
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'edited description' }];
+    const env = await harness.pipeline.preview({ files: [file], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    const batchId = res.outcome.batchId;
+
+    // No prepareUndo call: the confirm step must not invent its own plan.
+    const code = await harness.pipeline.undoBatch(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(code).toBe('undo_preview_required');
   });
 });
 

@@ -288,24 +288,21 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
       }
       try {
         if (body.confirm !== true) {
-          // Step 1 of the one-click flow: show exactly what the undo restores.
-          const envelope = await pipeline.prepareUndo(body.batchId);
+          // Step 1 of the one-click flow: the COMPLETE plan (issue #15) —
+          // every reverse-write group, each with its real preview, so the
+          // confirm screen shows everything step 2 will execute.
+          const plan = await pipeline.prepareUndo(body.batchId);
           return reply.code(200).send({
             requiresConfirmation: true,
-            undoPreview: envelope.preview,
-            commandPreview: envelope.commandPreview,
+            batchId: plan.batchId,
+            groups: plan.groups,
+            totalFiles: plan.totalFiles,
           });
         }
-        const { results } = await pipeline.undoBatch(body.batchId);
-        return reply.code(200).send({
-          undone: true,
-          batches: results.map((r) => ({
-            batchId: r.outcome.batchId,
-            outcome: r.outcome,
-            commandPreview: r.commandPreview,
-          })),
-          commandPreview: results[0]?.commandPreview ?? [],
-        });
+        // Step 2: the pipeline executes exactly the prepared previews and
+        // owns the response shape — the route forwards it untouched.
+        const result = await pipeline.undoBatch(body.batchId);
+        return reply.code(200).send(result);
       } catch (error) {
         return writeError(reply, error);
       }

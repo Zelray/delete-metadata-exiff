@@ -62,7 +62,9 @@ exact change first, keeping a verified backup, and leaving a way back.
 
 - Undo reverses a change from the journal's before-values: the old text goes back, tags
   that were added are removed. It is a normal write, so it previews first and keeps a
-  fresh backup.
+  fresh backup. When a batch touched files that had different originals, the review
+  shows one part per distinct original — every part is previewed, and only what you
+  saw is what runs.
 - History shows every batch with a backup "verified" chip. "Restore last batch" is one
   click; undoing the same batch twice is refused (it would re-apply the change).
 - The nuclear option — "Restore _original files" — reverts EVERYTHING since first

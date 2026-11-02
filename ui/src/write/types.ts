@@ -108,17 +108,36 @@ export interface WriteExecuteResponse {
 
 // ---- undo / history -----------------------------------------------------------
 
-/** POST /api/write/undo (step 1, no confirm): the reverse-write diff. */
-export interface UndoPreviewResponse {
-  requiresConfirmation: true;
-  undoPreview: WritePreview;
+/**
+ * One previewed group of an undo plan (issue #15): a batch whose files carry
+ * different before-values fans out into one reverse-write group per distinct
+ * edit set, and the confirm step shows EVERY group.
+ */
+export interface UndoPlanGroup {
+  files: string[];
+  preview: WritePreview;
   commandPreview: string[];
 }
 
-/** POST /api/write/undo {confirm:true}: the executed undo batch(es). */
+/** POST /api/write/undo (step 1, no confirm): the COMPLETE reverse-write plan. */
+export interface UndoPlanResponse {
+  requiresConfirmation: true;
+  batchId: string;
+  groups: UndoPlanGroup[];
+  /** Total files across all groups — the number the human is agreeing to. */
+  totalFiles: number;
+}
+
+/** POST /api/write/undo {confirm:true}: the executed undo group(s). */
 export interface UndoResultResponse {
   undone: true;
-  batches: Array<{ batchId: string; outcome: BatchOutcome; commandPreview: string[] }>;
+  batches: Array<{
+    batchId: string;
+    /** The prepared preview id that was executed — matches the confirm screen. */
+    previewId: string;
+    outcome: BatchOutcome;
+    commandPreview: string[];
+  }>;
   commandPreview: string[];
 }
 

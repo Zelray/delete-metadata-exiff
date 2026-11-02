@@ -89,8 +89,9 @@ export type WritePipelineErrorCode =
   | 'undo_unavailable'
   | 'batch_too_large'
   | 'already_undone'
-  /** The undo plan exists but can never run (a before-value had a line break). */
-  | 'undo_blocked';
+  /** undo_blocked: the plan exists but can never run (a before-value had a line break).
+   *  undo_preview_required: the confirm step ran with no prepared plan (issue #15). */
+  | 'undo_blocked' | 'undo_preview_required';
 
 export class WritePipelineError extends Error {
   readonly code: WritePipelineErrorCode;
@@ -229,6 +230,32 @@ export interface ExecuteResult {
   consistencyNotes: string[];
 }
 
+/**
+ * Step 1 of undo (issue #15): the COMPLETE plan — every group of the
+ * reverse-write fan-out, each with its real preview, so the human confirms
+ * everything that will run, not a first slice. A group is one distinct
+ * reverse-edit set: `files` are what its reverse write touches, `preview` is
+ * the real server preview shown at confirm (the only thing step 2 may
+ * execute), and `totalFiles` counts across groups — the number the human is
+ * agreeing to.
+ */
+export interface UndoPlanEnvelope {
+  batchId: string;
+  groups: Array<{ files: string[]; preview: WritePreview; commandPreview: string[] }>;
+  totalFiles: number;
+}
+
+/**
+ * Step 2 of undo (issue #15): the executed plan, forwarded verbatim by the
+ * route. One row per prepared preview; `previewId` proves the executed plan
+ * is the confirmed plan.
+ */
+export interface UndoRunResult {
+  undone: true;
+  batches: Array<{ batchId: string; previewId: string; outcome: BatchOutcome; commandPreview: string[] }>;
+  commandPreview: string[];
+}
+
 interface StoredPreview {
   id: string;
   planId: string;
@@ -310,6 +337,15 @@ export class WritePipeline {
   private readonly cancelFlags = new Set<string>();
   /** Batches past their last between-chunk boundary: later cancels are refused. */
   private readonly cancelClosedBatches = new Set<string>();
+  /**
+   * Issue #15: undo preparations awaiting their confirm step, keyed by the
+   * batch being undone. The confirmed step executes EXACTLY these prepared
+   * previews — it never re-plans — so what the human saw is what runs. An
+   * entry is consumed by the first undoBatch call; entries whose previews
+   * have expired (preview TTL) are pruned on the next prepare, so an
+   * abandoned confirm dialog costs nothing lasting.
+   */
+  private readonly pendingUndoPlans = new Map<string, { previewIds: string[]; createdAtMs: number }>();
 
   constructor(options: WritePipelineOptions) {
     this.engine = options.engine;
@@ -574,10 +610,6 @@ export class WritePipeline {
       throw new WritePipelineError('preview_required', `Preview "${previewId}" is not a destructive flow.`);
     }
     stored.destructive = { ...stored.destructive, exportPath };
-  }
-
-  getPreview(previewId: string): StoredPreview | null {
-    return this.previews.get(previewId) ?? null;
   }
 
   // ---- execute --------------------------------------------------------------
@@ -1023,54 +1055,69 @@ export class WritePipeline {
   // ---- undo -----------------------------------------------------------------
 
   /**
-   * Per-step metadata undo (reverse writes from journal before-values) for a
-   * completed batch. Because each file's before-values differ, this fans out
-   * into one full-safety preview+execute per distinct reverse-edit set.
-   * Undoing the same batch twice is refused: the second undo would re-apply
-   * the change.
+   * Step 1 of undo (the "what will this restore?" step the UI shows before
+   * the user confirms): the COMPLETE plan. Issue #15 — this used to preview
+   * only the first internal group while the confirmed step executed every
+   * group, so the human could approve a slice and the server would write the
+   * rest. Now every group of the fan-out is previewed here, the whole plan is
+   * returned for the confirm screen, and the prepared preview ids are stashed
+   * so `undoBatch` executes exactly these — never a re-planned shadow of
+   * them. Throws the same journal-state errors `undoBatch` used to throw
+   * (unknown batch, already undone, nothing undoable, undo_blocked).
    */
-  async undoBatch(
-    batchId: string,
-    options: ExecuteOptions = {},
-  ): Promise<{ results: ExecuteResult[]; previews: WritePreview[] }> {
+  async prepareUndo(batchId: string): Promise<UndoPlanEnvelope> {
     const { plan, start } = await this.prepareUndoPlan(batchId);
-    const groups = groupByEditSet(plan);
-    const results: ExecuteResult[] = [];
-    const previews: WritePreview[] = [];
-    for (const group of groups) {
-      const envelope = await this.preview({
-        files: group.map((p) => p.filePath),
-        edits: group[0]?.edits ?? [],
-        mode: 'undo',
-        description: `Undo batch ${batchId}`,
-        undoOfBatchId: batchId,
+    // prepareUndoPlan already refuses an empty plan, so the fan-out yields at
+    // least one group — no empty check here.
+    const prepared: UndoPlanEnvelope['groups'] = [];
+    // Prune abandoned preparations whose previews expired (preview TTL) — the
+    // Map stays bounded by the previews' own lifetime.
+    for (const [id, pending] of this.pendingUndoPlans) if (pending.createdAtMs < Date.now() - this.previewTtlMs) this.pendingUndoPlans.delete(id);
+    for (const group of groupByEditSet(plan)) {
+      const spec = {
+        files: group.map((p) => p.filePath), edits: group[0]?.edits ?? [], mode: 'undo' as const,
+        description: `Undo batch ${batchId}`, undoOfBatchId: batchId,
         ...(start?.destructive !== undefined ? { restore: { allowedTags: destructiveBatchTags(start) } } : {}),
-      });
-      previews.push(envelope.preview);
-      results.push(await this.execute(envelope.preview.previewId, options));
+      };
+      const envelope = await this.preview(spec);
+      prepared.push({ files: spec.files, preview: envelope.preview, commandPreview: envelope.commandPreview });
     }
-    return { results, previews };
+    this.pendingUndoPlans.set(batchId, { previewIds: prepared.map((g) => g.preview.previewId), createdAtMs: Date.now() });
+    return { batchId, groups: prepared, totalFiles: prepared.reduce((n, g) => n + g.files.length, 0) };
   }
 
   /**
-   * The preview-only half of undo (the "what will this restore?" step the UI
-   * shows before the user confirms). Throws the same errors as `undoBatch`.
+   * Step 2 of undo (the confirmed execution): replays EXACTLY the previews
+   * the confirm step showed — issue #15. Each prepared preview rides the
+   * ordinary full-safety execute (journal, backup, readback verification per
+   * group), so the write-pipeline contract is satisfied per group, but the
+   * grouping itself never re-plans: what the human approved is byte-for-byte
+   * what runs. With no preparation on file (step 1 skipped, or the server
+   * restarted between the two steps) this refuses — it will not execute a
+   * write the human was never shown — but the refusal first consults the
+   * journal state so a batch that cannot be undone at all still hears its
+   * truest cause (`already_undone`, `undo_blocked`, …) rather than a protocol
+   * error. Undoing the same batch twice is refused (`already_undone`): the
+   * second undo would re-apply the change.
    */
-  async prepareUndo(batchId: string): Promise<PreviewEnvelope> {
-    const { plan, start } = await this.prepareUndoPlan(batchId);
-    const groups = groupByEditSet(plan);
-    const first = groups[0];
-    if (first === undefined) {
-      throw new WritePipelineError('undo_unavailable', 'The undo plan is empty.');
+  async undoBatch(batchId: string, options: ExecuteOptions = {}): Promise<UndoRunResult> {
+    const pending = this.pendingUndoPlans.get(batchId);
+    if (pending === undefined) { await this.prepareUndoPlan(batchId);
+      // Refusal path ONLY (never reached on the success path): state errors
+      // take precedence — issue #4's "both steps name the real cause"
+      // contract survives the stricter protocol.
+      throw new WritePipelineError('undo_preview_required', 'Run the undo preview step first — this undo has not been shown to you yet, so nothing was executed.');
     }
-    return this.preview({
-      files: first.map((p) => p.filePath),
-      edits: first[0]?.edits ?? [],
-      mode: 'undo',
-      description: `Undo batch ${batchId}`,
-      undoOfBatchId: batchId,
-      ...(start?.destructive !== undefined ? { restore: { allowedTags: destructiveBatchTags(start) } } : {}),
-    });
+    // One confirmation, one execution: consume the plan up front. If the fan
+    // fails partway, a retry re-prepares — the honest step, because after a
+    // partial undo the world (and therefore the truthful preview) has changed.
+    this.pendingUndoPlans.delete(batchId);
+    const batches: UndoRunResult['batches'] = [];
+    for (const previewId of pending.previewIds) {
+      const result = await this.execute(previewId, options);
+      batches.push({ batchId: result.outcome.batchId, previewId, outcome: result.outcome, commandPreview: result.commandPreview });
+    }
+    return { undone: true, batches, commandPreview: batches[0]?.commandPreview ?? [] };
   }
 
   private async prepareUndoPlan(batchId: string): Promise<{
