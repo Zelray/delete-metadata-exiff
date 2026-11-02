@@ -45,6 +45,17 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { pollPortfile } from './lib/portfile.mjs';
+import {
+  assertNoNewProcesses,
+  closeMainWindow,
+  listeningSockets,
+  processPids,
+  processTree,
+  pwsq,
+  runCapture,
+  runPowerShell,
+  waitForQuietMachine,
+} from './lib/processes.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(APP_ROOT, 'dist-desktop');
@@ -134,7 +145,7 @@ async function verifyPackage() {
   step('artifacts', `${path.basename(zipPath)} + ${path.basename(provenanceNameFor(zipPath))}`);
 
   // ---- machine-wide baselines BEFORE anything runs ----------------------------
-  await waitForQuietMachine();
+  await waitForQuietMachine({ onNote: note });
   const before = { node: await processPids('node.exe'), exiftool: await processPids('exiftool.exe') };
   step('baselines', `${before.node.size} node.exe, ${before.exiftool.size} exiftool.exe before the run`);
 
@@ -466,7 +477,7 @@ async function bootAndTeardown(packageRoot, before, expectedVersion) {
   step('one-listener', `127.0.0.1:${only.port} LISTEN, owned by node.exe ${only.pid}`);
 
   // ---- close the window: the whole tree must go --------------------------------
-  const closed = await closeMainWindow(appChild.pid);
+  const closed = await closeMainWindow(appChild.pid, { onNote: note });
   if (!closed) throw new Error('Could not find the packaged app main window to close (WM_CLOSE)');
   const exitCodeSeen = await pollFor(
     () => (appChild.exitCode !== null ? appChild.exitCode : null),
@@ -491,210 +502,13 @@ async function bootAndTeardown(packageRoot, before, expectedVersion) {
   }
   step('residue', 'portfile / instance.lock / stop.request all swept');
 
-  await assertNoNewProcesses(before);
+  await assertNoNewProcesses(before, { onNote: note });
   step('no-orphans', 'node + exiftool back to the machine-wide baseline');
-}
-
-// ---------------------------------------------------------------------------
-// machine-wide process accounting (mirrors verify-desktop.mjs, pid-set based)
-// ---------------------------------------------------------------------------
-
-/** All pids for one image name, machine-wide (tasklist). */
-async function processPids(imageName) {
-  const out = await runCapture('tasklist', ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV', '/NH']);
-  if (/info: no tasks/i.test(out)) return new Set();
-  const pids = new Set();
-  for (const line of out.split(/\r?\n/)) {
-    const columns = line.split('","');
-    const pid = Number.parseInt((columns[1] ?? '').replace(/"/g, ''), 10);
-    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
-  }
-  return pids;
-}
-
-/** Process tree below `rootPid`, via Get-CimInstance Win32_Process. */
-async function processTree(rootPid) {
-  const all = await listProcesses();
-  const byParent = new Map();
-  for (const proc of all) {
-    if (!byParent.has(proc.ppid)) byParent.set(proc.ppid, []);
-    byParent.get(proc.ppid).push(proc);
-  }
-  const tree = [];
-  const queue = [rootPid];
-  while (queue.length > 0) {
-    const pid = queue.shift();
-    for (const child of byParent.get(pid) ?? []) {
-      tree.push(child);
-      queue.push(child.pid);
-    }
-  }
-  return tree;
-}
-
-async function listProcesses() {
-  // Control characters in some process's command line are NOT escaped by
-  // ConvertTo-Json and are illegal inside a JSON string literal (verify-desktop
-  // lesson): flatten them in PowerShell AND on the decoded text here.
-  const json = (
-    await runPowerShell(
-      `
-    Get-CimInstance Win32_Process | ForEach-Object {
-      [pscustomobject]@{
-        ProcessId       = $_.ProcessId
-        ParentProcessId = $_.ParentProcessId
-        Name            = $_.Name
-        CommandLine     = if ($null -eq $_.CommandLine) { $null } else { $_.CommandLine -replace '[\\x00-\\x1F]', ' ' }
-      }
-    } |
-      ConvertTo-Json -Compress -Depth 2
-  `,
-      'list-processes',
-    )
-  ).replace(/[\u0000-\u001F]/g, ' ');
-  const parsed = JSON.parse(json || '[]');
-  const rows = Array.isArray(parsed) ? parsed : [parsed];
-  return rows.map((row) => ({
-    pid: Number(row.ProcessId),
-    ppid: Number(row.ParentProcessId),
-    name: String(row.Name ?? ''),
-    cmdline: String(row.CommandLine ?? ''),
-  }));
-}
-
-async function listeningSockets() {
-  const json = await runPowerShell(
-    `
-    Get-NetTCPConnection -State Listen |
-      Select-Object LocalAddress, LocalPort, OwningProcess |
-      ConvertTo-Json -Compress -Depth 2
-  `,
-    'listening-sockets',
-  );
-  const parsed = JSON.parse(json || '[]');
-  const rows = Array.isArray(parsed) ? parsed : [parsed];
-  return rows.map((row) => ({
-    address: String(row.LocalAddress ?? ''),
-    port: Number(row.LocalPort ?? 0),
-    pid: Number(row.OwningProcess ?? 0),
-  }));
-}
-
-/** PostMessage(hwnd, WM_CLOSE) to OUR pid's main window (name-based fallback). */
-async function closeMainWindow(pid) {
-  const out = await runPowerShell(
-    `
-    Add-Type -Namespace MetaDeskPkg -Name Native -MemberDefinition '
-      [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-    '
-    $window = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue |
-      Where-Object { $_.MainWindowHandle -ne 0 } |
-      Select-Object -First 1
-    if ($null -eq $window) {
-      $window = Get-Process -Name MetaDesk -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 } |
-        Select-Object -First 1
-    }
-    if ($null -eq $window) { Write-Output 'NOWINDOW' }
-    else {
-      [MetaDeskPkg.Native]::PostMessage($window.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-      Write-Output ('CLOSED ' + $window.Id)
-    }
-  `,
-    'close-window',
-  );
-  note(`closeMainWindow: ${out.trim()}`);
-  return out.includes('CLOSED');
-}
-
-/**
- * The orphan gate: no NEW node.exe / exiftool.exe pids beyond the baseline,
- * retried once after a settle window, naming whatever survived.
- */
-async function assertNoNewProcesses(before) {
-  const attempt = async () => ({
-    node: await processPids('node.exe'),
-    exiftool: await processPids('exiftool.exe'),
-  });
-
-  let now = await attempt();
-  if (!newPids(before, now)) return;
-
-  note('process churn detected; settling 10 s and recounting once');
-  await sleep(10_000);
-  now = await attempt();
-  const newOnes = newPids(before, now);
-  if (!newOnes) return;
-
-  const names = await listProcesses();
-  const describe = (pid) => {
-    const proc = names.find((candidate) => candidate.pid === pid);
-    return proc ? `${proc.name} (pid ${pid}) ${proc.cmdline.slice(0, 120)}` : `pid ${pid}`;
-  };
-  throw new Error(
-    [
-      'Orphan processes survived the run:',
-      ...[...newOnes.node].map((pid) => `  node.exe: ${describe(pid)}`),
-      ...[...newOnes.exiftool].map((pid) => `  exiftool.exe: ${describe(pid)}`),
-      `(baseline: node ${before.node.size}, exiftool ${before.exiftool.size}; now: node ${now.node.size}, exiftool ${now.exiftool.size})`,
-    ].join('\n'),
-  );
-}
-
-function newPids(before, now) {
-  const node = [...now.node].filter((pid) => !before.node.has(pid));
-  const exiftool = [...now.exiftool].filter((pid) => !before.exiftool.has(pid));
-  if (node.length === 0 && exiftool.length === 0) return null;
-  return { node: new Set(node), exiftool: new Set(exiftool) };
-}
-
-/** Refuse to start counting while another node-heavy job (vitest, npm test) runs. */
-async function waitForQuietMachine() {
-  const deadline = Date.now() + 60_000;
-  let busy = await busyProcesses();
-  while (busy.length > 0 && Date.now() < deadline) {
-    note(`waiting for a quiet machine (other node jobs running: ${busy.length})`);
-    await sleep(5_000);
-    busy = await busyProcesses();
-  }
-  if (busy.length > 0) {
-    note('WARNING: other node jobs are still running; the machine-wide counts may be flaky');
-  }
-}
-
-async function busyProcesses() {
-  const processes = await listProcesses();
-  return processes.filter(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.pid !== process.pid &&
-      /vitest|npm test|npm run test|verify-launch|verify-desktop|verify-package|build-portable/i.test(proc.cmdline),
-  );
 }
 
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
-
-function pwsq(text) {
-  return String(text).replace(/'/g, "''");
-}
-
-function runCapture(file, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, {
-      shell: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    child.stdout.on('data', (chunk) => {
-      out += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('exit', () => resolve(out));
-  });
-}
 
 /** runCapture that also reports the exit code (for the selfcheck). */
 function runCaptureExit(file, args, cwd) {
@@ -714,33 +528,6 @@ function runCaptureExit(file, args, cwd) {
     });
     child.on('error', reject);
     child.on('exit', (code) => resolve({ code, out }));
-  });
-}
-
-/** argv-array spawn of pwsh with a readable (non-base64) script argument. */
-function runPowerShell(script, label) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('pwsh', ['-NoProfile', '-NonInteractive', '-NoLogo', '-Command', script], {
-      shell: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk) => {
-      out += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      err += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve(out);
-        return;
-      }
-      reject(new Error(`pwsh (${label}) exited ${code}: ${tailOf(err, 10)}`));
-    });
   });
 }
 
