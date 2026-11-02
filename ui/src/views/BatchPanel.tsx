@@ -21,6 +21,7 @@ import {
   type StagedEdits,
 } from '../write/fields';
 import { useWriteRunner } from '../write/useWriteRun';
+import { fileSet, filterByName } from '../lib/fileSet';
 import type { TagEdit } from '../write/types';
 
 /** Server read cap the date-shift pre-read must honor honestly. */
@@ -40,6 +41,7 @@ export function BatchPanel() {
   const scanResult = useUiStore((s) => s.scanResult);
   const selectedPaths = useUiStore((s) => s.selectedPaths);
   const searchText = useUiStore((s) => s.searchText);
+  const badges = useUiStore((s) => s.badges);
 
   const [staged, setStaged] = useState<StagedEdits>(emptyStagedEdits);
   const [scope, setScope] = useState<'selection' | 'filtered'>('selection');
@@ -60,21 +62,17 @@ export function BatchPanel() {
   const runner = useWriteRunner();
 
   const entries = scanResult?.entries ?? [];
-  const filtered = useMemo(() => {
-    const needle = searchText.trim().toLowerCase();
-    return entries.filter((entry) => needle === '' || entry.name.toLowerCase().includes(needle));
-  }, [entries, searchText]);
+  const filtered = useMemo(() => filterByName(entries, searchText), [entries, searchText]);
 
-  const inScope = useMemo(() => {
-    const base = scope === 'selection' ? selectedPaths : filtered.map((entry) => entry.path);
-    return base.filter((path) => {
-      const entry = entries.find((e) => e.path === path);
-      if (entry === undefined) return true;
-      if (onlyWithGps && !entry.warnings.includes('badge:gps-present')) return false;
-      if (onlyMissingCopyright && entry.warnings.includes('badge:copyright-present')) return false;
-      return true;
-    });
-  }, [scope, selectedPaths, filtered, entries, onlyWithGps, onlyMissingCopyright]);
+  // Issue #16: the scope answer comes from the ONE file-set module — the
+  // toggle picks the base, the chips apply the ONE badge truth (which now
+  // also honors session-learned badges, not just scan-time warnings).
+  const inScope = useMemo(
+    () =>
+      fileSet({ entries, selectedPaths, searchText }, { mode: scope, badges, onlyWithGps, onlyMissingCopyright })
+        .files,
+    [scope, selectedPaths, entries, searchText, badges, onlyWithGps, onlyMissingCopyright],
+  );
 
   const fieldEdits = useMemo(() => buildTagEdits(staged), [staged]);
   const shiftAmountValue = Number(shiftAmount);

@@ -15,6 +15,7 @@ import {
   MetadataBadgeRow,
 } from '../components/MetadataBadges';
 import { formatBytes, formatDateTime, basename } from '../lib/format';
+import { filterByName, hasCopyright, hasGps } from '../lib/fileSet';
 import { navigate } from '../lib/router';
 
 type SortKey = 'name' | 'dateTaken' | 'type' | 'size';
@@ -57,17 +58,13 @@ export function FileGrid({ onOpenDetail }: { onOpenDetail: (path: string) => voi
   const entries = scanResult?.entries ?? [];
 
   const filtered = useMemo(() => {
-    const needle = searchText.trim().toLowerCase();
-    let list = entries;
-    if (needle !== '') {
-      list = list.filter((entry) => entry.name.toLowerCase().includes(needle));
-    }
+    // Issue #16: the name filter and the badge truth live in the file-set
+    // module. A badge filter now falls back to scan-time truth for files the
+    // session has not learned about yet (a scan-flagged GPS file matches the
+    // GPS filter without being clicked first).
+    let list = filterByName(entries, searchText);
     if (badgeFilter !== 'none') {
-      list = list.filter((entry) => {
-        const known = badges[entry.path];
-        if (known === undefined) return false;
-        return badgeFilter === 'gps' ? known.hasGps : known.hasCopyright;
-      });
+      list = list.filter((entry) => (badgeFilter === 'gps' ? hasGps(entry, badges) : hasCopyright(entry, badges)));
     }
     const sorted = [...list];
     sorted.sort((a, b) => {

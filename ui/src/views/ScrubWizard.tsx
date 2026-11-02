@@ -9,6 +9,7 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { useWriteRunner } from '../write/useWriteRun';
 import type { DetectedPreview, ScrubDetection, TagEdit } from '../write/types';
 import { basename } from '../lib/format';
+import { fileSet } from '../lib/fileSet';
 
 /** Server cap for one scrub scan (writes.ts MAX_SCRUB_FILES). */
 const MAX_SCRUB_FILES = 1000;
@@ -37,22 +38,17 @@ export function ScrubWizard() {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
-  /** The name-filtered folder paths BEFORE the server-cap slice — the
-   * truncation flag below compares this length against MAX_SCRUB_FILES. */
-  const filteredPaths = useMemo(() => {
-    return (scanResult?.entries ?? [])
-      .filter((entry) => searchText.trim() === '' || entry.name.toLowerCase().includes(searchText.trim().toLowerCase()))
-      .map((entry) => entry.path);
-  }, [scanResult, searchText]);
-
-  /** The files the wizard would scan: the selection, else the filtered folder. */
-  const scope = useMemo(() => {
-    const base = selectedPaths.length > 0 ? selectedPaths : filteredPaths;
-    return base.slice(0, MAX_SCRUB_FILES);
-  }, [selectedPaths, filteredPaths]);
-  const scopeTruncated = selectedPaths.length > 0
-    ? selectedPaths.length > MAX_SCRUB_FILES
-    : filteredPaths.length > MAX_SCRUB_FILES;
+  /** The files the wizard would scan, from the ONE file-set module (issue
+   * #16): the selection when non-empty, else the name-filtered folder,
+   * capped at MAX_SCRUB_FILES. Truncation is measured on the PRE-cap base,
+   * mirroring the server cap. */
+  const scrubScope = useMemo(
+    () =>
+      fileSet({ entries: scanResult?.entries ?? [], selectedPaths, searchText }, { mode: 'auto', cap: MAX_SCRUB_FILES }),
+    [scanResult, selectedPaths, searchText],
+  );
+  const scope = scrubScope.files;
+  const scopeTruncated = scrubScope.truncated;
 
   const detect = async (): Promise<void> => {
     if (scope.length === 0 || scanning) return;

@@ -1071,20 +1071,18 @@ describe('scope-honesty source pins (leaf 1.9)', () => {
     { query: '?raw', import: 'default', eager: true },
   );
 
-  it('the case-insensitive name predicate keeps exactly its known copies (fourth-copy alarm)', () => {
-    // The three file-scope copies — the duplication census of record — plus
-    // DetailViewer.tsx's single TAG-ROW filter, which the contract of record
-    // measured and EXCLUDED from that census (BUILD-NOTES leaf-1.9 premise P2:
-    // it filters tag rows, not file scope). Pinned at exactly one occurrence
-    // so it can neither gain a copy nor silently change.
+  it('the case-insensitive name predicate lives in the file-set module, not in views', () => {
+    // Issue #16 (arch-review Candidate 2): the three file-scope copies moved
+    // into ui/src/lib/fileSet.ts (filterByName) — the census now pins ZERO
+    // copies in views, plus DetailViewer.tsx's single TAG-ROW filter, which
+    // the contract of record measured and EXCLUDED (BUILD-NOTES leaf-1.9
+    // premise P2: it filters tag rows, not file scope). A view copy returning
+    // is exactly the regression this pin exists for.
     const knownCopies: Record<string, number> = {
-      'BatchPanel.tsx': 1,
-      'ScrubWizard.tsx': 1,
-      'FileGrid.tsx': 1,
       'DetailViewer.tsx': 1,
     };
     // Belt: FileGrid's copy is pinned independent of the glob below.
-    expect((fileGridSource as string).split(NAME_PREDICATE).length - 1).toBe(1);
+    expect((fileGridSource as string).split(NAME_PREDICATE).length - 1).toBe(0);
 
     const counts: Record<string, number> = {};
     for (const [file, source] of Object.entries(viewDirSources)) {
@@ -1098,7 +1096,7 @@ describe('scope-honesty source pins (leaf 1.9)', () => {
     for (const [name, count] of Object.entries(counts)) {
       expect(
         count,
-        `${name} holds ${count} copy(ies) of the name predicate — a FOURTH file-scope copy is the deferred selector's promotion trigger (BUILD-NOTES leaf-1.9 "WAIVER + promotion triggers")`,
+        `${name} holds ${count} copy(ies) of the name predicate — file-scope answers live in ui/src/lib/fileSet.ts now (issue #16); a view copy is a regression`,
       ).toBe(knownCopies[name] ?? 0);
     }
   });
