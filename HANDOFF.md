@@ -894,3 +894,60 @@ questions for Mike (scrub scope radio vs implicit fallback; badge-source
 convergence; what "All filtered files" should mean; capture-date sorting as a
 feature). **The arch-v11 series is COMPLETE — next work is the v1.1 feature
 backlog on Mike's priorities.**
+
+## 10. arch-review candidates — implementation stream (2026-11-02, started)
+
+Source: the 2026-11-02 read-only architecture review (findings:
+`.unlazy/arch-review-2026-11-02/findings/*.md`, report card deck distilled to 9
+candidates; implementation gate ledger: `.unlazy/candidates-2026-11-02/GATES.md`).
+Execution order is the report's own: C1 undo-plan → C2 UI file-set → C4 portfile
+reader → C5 process kit → C6 boot-and-prove → C3/C7/C8/C9 + small finds. One
+issue + one conventional commit per candidate; tests proven red before each
+implementation; gates run singly (MD19).
+
+### 10.1 C1 — Undo confirms the whole plan (issue #15, commit 27c40db, LOCAL only)
+
+Behavior change (owner-visible): the Save Review step for undo now shows EVERY
+reverse-write group. Previously `prepareUndo` previewed only `groups[0]` of the
+fan-out while `undoBatch` re-planned and executed all groups — the human could
+confirm a slice the server then exceeded (the write-pipeline contract stayed
+mechanically satisfied per group; the Save Review promise did not).
+
+New interface facts (write-pipeline contract surface):
+- `prepareUndo(batchId) -> UndoPlanEnvelope { batchId, groups[{files,preview,
+  commandPreview}], totalFiles }` — previews every group, stashes the ordered
+  prepared preview ids in `WritePipeline.pendingUndoPlans` (pruned on preview
+  TTL at each prepare).
+- `undoBatch(batchId) -> UndoRunResult { undone: true, batches[{batchId,
+  previewId, outcome, commandPreview}], commandPreview }` — executes EXACTLY
+  the prepared ids (each still full-safety: journal, backup, readback verify),
+  never re-plans. No prepared plan → refuses `undo_preview_required`, but only
+  AFTER `prepareUndoPlan` runs in the refusal path, so `already_undone` /
+  `undo_blocked` still name the truest cause (issue #4 both-steps contract kept;
+  its test stays green). One confirmation, one execution: the stash is consumed
+  before the fan starts; a mid-fan failure means the retry re-prepares (honest:
+  the world changed).
+- `POST /api/write/undo` step 1 now answers `{ requiresConfirmation, batchId,
+  groups, totalFiles }` (was `undoPreview`+`commandPreview`); step 2 forwards
+  the pipeline shape verbatim (route no longer hand-shapes batches / picks
+  `results[0]`).
+- UI: `UndoPreviewResponse` -> `UndoPlanResponse`; HistoryView builds one
+  PreviewGroup per plan group (label "Undo part i of N: …", all
+  `evidence:'previewed'`); the runner needed NO change (its undo arm already
+  merged all `result.batches`).
+
+Gotchas for the next agent:
+- `undoBatch` REQUIRES a prior `prepareUndo` in-process. Direct programmatic
+  callers (the gpsStrip e2e test) must run the two-step. Server restart between
+  the steps loses the stash (in-memory by design) -> step 2 refuses; the user
+  re-previews. This is deliberate: previews died with the restart anyway.
+- The route's second-confirm test (routes.test.ts "refuses a second") now
+  refuses with `already_undone` via the refusal-path state check — same 400 as
+  before, code is more truthful.
+- C2 line budget on writePipeline is effectively EXHAUSTED (1085/1086): the
+  dead `getPreview` accessor was deleted (review F8, grep-verified zero
+  callers) and the undo code compacted to fit. Candidate C3 (chunk-invocation
+  unification) is the sanctioned way to SHRINK this module next; any other
+  addition to it must delete its own footprint.
+- Proven-red evidence (3x AssertionError pre-change) recorded verbatim in
+  `.unlazy/candidates-2026-11-02/GATES.md` C1-G1.
