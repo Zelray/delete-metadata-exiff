@@ -31,6 +31,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { pollPortfile, readPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAUNCHER = path.join(APP_ROOT, 'bin', 'metadesk.mjs');
@@ -158,7 +159,19 @@ async function run() {
 
   // ---- 1. clean start -------------------------------------------------------------
   launcherChild = spawnLauncher(['--no-browser'], 'launcher');
-  const portfile = await pollPortfile(portfilePath, launcherChild, 60_000);
+  // Issue #17: the portfile's field rules live in scripts/lib/portfile.mjs —
+  // this gate only adds its OWN policies on top (token length, high port).
+  let portfile;
+  try {
+    portfile = await pollPortfile(portfilePath, {
+      timeoutMs: 60_000,
+      abort: () =>
+        launcherChild.exitCode !== null || launcherChild.signalCode !== null ? 'launcher exited' : null,
+    });
+  } catch {
+    fail(`Launcher exited during startup; output:\n${tailOf('launcher')}`);
+  }
+  if (portfile === null) fail(`The server never wrote a portfile with {port, token, pid} at ${portfilePath}`);
   const base = `http://127.0.0.1:${portfile.port}`;
   const token = portfile.token;
   if (typeof token !== 'string' || token.length < 16) {
@@ -202,7 +215,7 @@ async function run() {
   if (!/already running/i.test(captures.second)) {
     fail(`Second launch did not report the running instance; output:\n${tailOf('second')}`);
   }
-  const afterSecond = readJsonSafe(portfilePath);
+  const afterSecond = readPortfile(portfilePath);
   if (afterSecond === null || afterSecond.pid !== before.pid || afterSecond.port !== before.port) {
     fail(`Second launch disturbed the running instance: ${JSON.stringify(afterSecond)}`);
   }
@@ -257,22 +270,6 @@ async function run() {
 }
 
 // ---- helpers ---------------------------------------------------------------------------
-
-/** Poll until the server's portfile appears with {port, token, pid}. */
-async function pollPortfile(portfilePath, child, timeoutMs) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      fail(`Launcher exited during startup (code ${child.exitCode}); output:\n${tailOf('launcher')}`);
-    }
-    const parsed = readJsonSafe(portfilePath);
-    if (parsed !== null && Number.isInteger(parsed.port) && typeof parsed.token === 'string') {
-      return parsed;
-    }
-    await sleep(250);
-  }
-  fail(`The server never wrote a portfile with {port, token, pid} at ${portfilePath}`);
-}
 
 function readJsonSafe(filePath) {
   try {

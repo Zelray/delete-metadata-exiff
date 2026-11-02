@@ -67,6 +67,7 @@ import process from 'node:process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import { pollPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LAUNCHER = path.join(APP_ROOT, 'bin', 'metadesk.mjs');
@@ -248,7 +249,20 @@ async function withStack(dataDir, fn) {
   child.stderr.on('data', (c) => (launcherOutput += c));
 
   try {
-    const portfile = await pollPortfile(portfilePath, child, () => launcherOutput, 60_000);
+    // Issue #17: field rules live in scripts/lib/portfile.mjs; this gate
+    // keeps only its own child-exit abort and launcher-output diagnostics.
+    let portfile;
+    try {
+      portfile = await pollPortfile(portfilePath, {
+        timeoutMs: 60_000,
+        abort: () => (child.exitCode !== null || child.signalCode !== null ? 'launcher exited' : null),
+      });
+    } catch {
+      fail(`Launcher exited during startup:\n${launcherOutput().slice(-1200)}`);
+    }
+    if (portfile === null) {
+      fail(`The server never wrote a portfile at ${portfilePath}\nlauncher output:\n${launcherOutput().slice(-1200)}`);
+    }
     const base = `http://127.0.0.1:${portfile.port}`;
     const token = portfile.token;
     if (typeof token !== 'string' || token.length < 16) fail('The portfile token is missing or too short');
@@ -262,23 +276,6 @@ async function withStack(dataDir, fn) {
   } finally {
     await stopStack(child, () => launcherOutput);
   }
-}
-
-async function pollPortfile(portfilePath, child, launcherOutput, timeoutMs) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      fail(`Launcher exited during startup (code ${child.exitCode}):\n${launcherOutput().slice(-1200)}`);
-    }
-    try {
-      const parsed = JSON.parse(readFileSync(portfilePath, 'utf8'));
-      if (Number.isInteger(parsed.port) && typeof parsed.token === 'string') return parsed;
-    } catch {
-      /* not written yet */
-    }
-    await sleep(250);
-  }
-  fail(`The server never wrote a portfile at ${portfilePath}\nlauncher output:\n${launcherOutput().slice(-1200)}`);
 }
 
 async function stopStack(child, launcherOutput) {
@@ -313,10 +310,6 @@ async function stopStack(child, launcherOutput) {
     }
   }
   step('stop', 'launcher exited 0; server + engine shut down through the graceful ladder');
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** JSON fetch with the token header; returns {status, body}. */

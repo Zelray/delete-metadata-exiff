@@ -22,12 +22,13 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { pollPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_ENTRY = path.join(APP_ROOT, 'server', 'src', 'index.ts');
@@ -136,7 +137,20 @@ async function run() {
     serverStderr += c;
   });
 
-  const portfile = await pollPortfile(child, dataDir, 45_000);
+  // Issue #17: the field rules live in scripts/lib/portfile.mjs. The pid in
+  // the file is the server process inside the tsx tree (a child of this
+  // spawn under the dev pair) — the module validates the FILE; pid-equality
+  // with our child is a launcher-policy question this gate never made.
+  let portfile;
+  try {
+    portfile = await pollPortfile(path.join(dataDir, 'portfile.json'), {
+      timeoutMs: 45_000,
+      abort: () => (child.exitCode !== null || child.signalCode !== null ? 'server exited' : null),
+    });
+  } catch {
+    bail(`Server exited during startup (code ${child.exitCode})`);
+  }
+  if (portfile === null) bail('The server never wrote a portfile with {port, token, pid}');
   const base = `http://127.0.0.1:${portfile.port}`;
   const token = portfile.token;
   if (typeof token !== 'string' || token.length < 16) {
@@ -435,30 +449,6 @@ function writeFixtureMetadata(targetPath) {
   });
 }
 
-async function pollPortfile(child, dataDir, timeoutMs) {
-  const portfilePath = path.join(dataDir, 'portfile.json');
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      bail(`Server exited during startup (code ${child.exitCode})`);
-    }
-    try {
-      const parsed = JSON.parse(await readFile(portfilePath, 'utf8'));
-      // The dataDir is a fresh temp dir only this server instance writes to,
-      // so presence of {port, token} proves ownership. (The pid in the file is
-      // the real server process; under tsx it is a child of our spawn, so we
-      // deliberately do not require pid equality here.)
-      if (Number.isInteger(parsed.port) && typeof parsed.token === 'string' && parsed.token.length > 0) {
-        return parsed;
-      }
-    } catch {
-      /* not written yet */
-    }
-    await sleep(250);
-  }
-  bail('The server never wrote a portfile with {port, token, pid}');
-}
-
 async function fetchJson(url, options = {}) {
   try {
     const response = await fetch(url, {
@@ -613,10 +603,6 @@ function countExiftool() {
       resolve(out.split(/\r?\n/).filter((l) => l.trim().length > 0).length);
     });
   });
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function tail(text, count = 40) {

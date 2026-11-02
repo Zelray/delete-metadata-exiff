@@ -44,6 +44,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { pollPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(APP_ROOT, 'dist-desktop');
@@ -390,12 +391,14 @@ async function bootAndTeardown(packageRoot, before, expectedVersion) {
   });
   diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}`;
 
-  const portfile = await pollFor(
-    () => readJsonSafe(portfilePath),
-    60_000,
-    'the extracted app never wrote a portfile',
-    () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  );
+  // Issue #17: field rules live in scripts/lib/portfile.mjs.
+  const portfile = await pollPortfile(portfilePath, {
+    timeoutMs: 60_000,
+    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
+  }).catch((abortError) => {
+    throw new Error(`the extracted app never wrote a portfile (${abortError.message})`);
+  });
+  if (portfile === null) throw new Error('the extracted app never wrote a portfile');
   step('boot', `${portfile.url} (server pid ${portfile.pid})`);
 
   // ---- the spawn tree: MetaDesk.exe -> our node.exe -> (exiftool.exe) ----------
@@ -769,14 +772,6 @@ async function fetchJson(url) {
     return { status: response.status, body };
   } catch (error) {
     return { status: 0, body: { error: String(error) } };
-  }
-}
-
-function readJsonSafe(filePath) {
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
   }
 }
 

@@ -58,6 +58,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { pollPortfile, readPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STAGE = path.join(APP_ROOT, 'dist-desktop', 'stage');
@@ -191,17 +192,12 @@ async function runBundle() {
   diagOf = () => `--- staged server output (tail) ---\n${tailOf(output)}`;
 
   try {
-    const portfile = await pollFor(
-      () => readJsonSafe(portfilePath),
-      60_000,
-      'the staged server never wrote a portfile',
-      () => {
-        if (engine.exitCode !== null) {
-          return `the staged server exited early with code ${engine.exitCode}`;
-        }
-        return null;
-      },
-    );
+    // Issue #17: field rules live in scripts/lib/portfile.mjs.
+    const portfile = await pollPortfile(portfilePath, {
+      timeoutMs: 60_000,
+      abort: () => (engine.exitCode !== null ? `the staged server exited early with code ${engine.exitCode}` : null),
+    });
+    if (portfile === null) throw new Error('the staged server never wrote a portfile');
     step('boot', `${portfile.url} (pid ${portfile.pid})`);
 
     const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
@@ -311,12 +307,14 @@ async function runShell() {
   };
   capture(shellChild, 'shell');
 
-  const portfile = await pollFor(
-    () => readJsonSafe(portfilePath),
-    60_000,
-    'the wrapped app never wrote a portfile',
-    () => (shellChild.exitCode !== null ? `MetaDesk.exe exited early with code ${shellChild.exitCode}` : null),
-  );
+  // Issue #17: field rules live in scripts/lib/portfile.mjs.
+  const portfile = await pollPortfile(portfilePath, {
+    timeoutMs: 60_000,
+    abort: () => (shellChild.exitCode !== null ? `MetaDesk.exe exited early with code ${shellChild.exitCode}` : null),
+  }).catch((abortError) => {
+    throw new Error(`the wrapped app never wrote a portfile (${abortError.message})`);
+  });
+  if (portfile === null) throw new Error('the wrapped app never wrote a portfile');
   step('boot', `${portfile.url} (server pid ${portfile.pid})`);
   diagOf = () => `--- shell stderr (tail) ---\n${tailOf(shellOutput)}`;
 
@@ -399,8 +397,8 @@ async function runShell() {
   const after = await processTree(shellChild.pid);
   const nodeCount = after.filter((proc) => proc.name.toLowerCase() === 'node.exe').length;
   if (nodeCount !== 1) throw new Error(`After the second launch the tree has ${nodeCount} node.exe processes`);
-  const portfileAfter = readJsonSafe(portfilePath);
-  if (!portfileAfter || portfileAfter.pid !== pidBefore) {
+  const portfileAfter = readPortfile(portfilePath);
+  if (portfileAfter === null || portfileAfter.pid !== pidBefore) {
     throw new Error(`The second launch disturbed the running server: ${JSON.stringify(portfileAfter)}`);
   }
   const healthAfter = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
@@ -504,16 +502,17 @@ async function bootShell(packageRoot, dataDir, portfileOk = null) {
   const portfilePath = path.join(dataDir, 'portfile.json');
   const child = launchShell(packageRoot, dataDir);
   shellChild = child;
-  const portfile = await pollFor(
-    () => {
-      const candidate = readJsonSafe(portfilePath);
-      if (candidate === null) return null;
-      return portfileOk === null || portfileOk(candidate) ? candidate : null;
-    },
-    60_000,
-    'the wrapped app never wrote a portfile',
-    () => (child.exitCode !== null ? `MetaDesk.exe exited early with code ${child.exitCode}` : null),
-  );
+  // Issue #17: the reader's field rules live in scripts/lib/portfile.mjs;
+  // `portfileOk` stays this gate's own admission policy (case 3 seeds a
+  // stale portfile the boot must NOT accept).
+  const portfile = await pollPortfile(portfilePath, {
+    timeoutMs: 60_000,
+    accept: portfileOk,
+    abort: () => (child.exitCode !== null ? `MetaDesk.exe exited early with code ${child.exitCode}` : null),
+  }).catch((abortError) => {
+    throw new Error(`the wrapped app never wrote a portfile (${abortError.message})`);
+  });
+  if (portfile === null) throw new Error('the wrapped app never wrote a portfile');
   const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
   if (health.status !== 200 || health.body.ok !== true) {
     throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
@@ -780,11 +779,8 @@ async function matrixCase4SlowBootSingleInstance(packageRoot) {
 
   // Instance 1 finishes its boot normally and owns the one portfile.
   if (first.exitCode !== null) throw new Error('instance 1 did not survive the second launch');
-  const portfile = await pollFor(
-    () => readJsonSafe(portfilePath),
-    30_000,
-    'instance 1 never wrote a portfile after the second launch',
-  );
+  const portfile = await pollPortfile(portfilePath, { timeoutMs: 30_000 });
+  if (portfile === null) throw new Error('instance 1 never wrote a portfile after the second launch');
   const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
   if (health.status !== 200 || health.body.ok !== true) {
     throw new Error('instance 1 stopped answering its health check after the second launch');
@@ -1155,14 +1151,6 @@ async function fetchJson(url) {
     return { status: response.status, body };
   } catch (error) {
     return { status: 0, body: { error: String(error) } };
-  }
-}
-
-function readJsonSafe(filePath) {
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
   }
 }
 

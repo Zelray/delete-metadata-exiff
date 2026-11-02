@@ -76,6 +76,7 @@ import {
   sha256File,
   waitForLock,
 } from './fixtures.mjs';
+import { pollPortfile } from '../scripts/lib/portfile.mjs';
 
 const EVIDENCE_DIR = path.join(APP_ROOT, 'evidence');
 const SNAPSHOT_DIR = path.join(APP_ROOT, 'tests-e2e', '__evidence-snapshot__');
@@ -321,7 +322,12 @@ async function run() {
   launcherChild.stdout.on('data', (c) => (launcherOutput += c));
   launcherChild.stderr.on('data', (c) => (launcherOutput += c));
 
-  const portfile = await pollPortfile(portfilePath, 60_000);
+  // Issue #17: field rules live in scripts/lib/portfile.mjs (one reader for
+  // every tooling consumer; launcher-output stays this gate's own diagnostic).
+  const portfile = await pollPortfile(portfilePath, { timeoutMs: 60_000 });
+  if (portfile === null) {
+    fail(`The server never wrote a portfile at ${portfilePath}\nlauncher output:\n${launcherOutput.slice(-1500)}`);
+  }
   lastPortfile = portfile;
   const base = `http://127.0.0.1:${portfile.port}`;
   const token = portfile.token;
@@ -937,20 +943,6 @@ async function sizeViewportToContent(page, label) {
     );
   }
   step('viewport', `${label} framed at 1280x${height} (nothing cut)`);
-}
-
-async function pollPortfile(portfilePath, timeoutMs) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const parsed = JSON.parse(readFileSync(portfilePath, 'utf8'));
-      if (Number.isInteger(parsed.port) && typeof parsed.token === 'string') return parsed;
-    } catch {
-      /* not written yet */
-    }
-    await sleep(250);
-  }
-  fail(`The server never wrote a portfile at ${portfilePath}\nlauncher output:\n${launcherOutput.slice(-1500)}`);
 }
 
 async function stopStack() {

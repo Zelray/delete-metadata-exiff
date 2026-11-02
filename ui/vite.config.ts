@@ -3,9 +3,12 @@ import type { Plugin, ViteDevServer } from 'vite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Issue #17: the portfile's field rules live in ONE reader for the whole
+// Node side (scripts/lib/portfile.mjs) — the dev plugin no longer keeps a
+// private fifth definition of the shape.
+import { readPortfile } from '../scripts/lib/portfile.mjs';
 
 /**
  * MetaDesk dev-mode handshake (BUILD-NOTES pinned decision).
@@ -24,22 +27,6 @@ const PORTFILE = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../data/portfile.json',
 );
-
-interface Portfile {
-  port: number;
-  pid?: number;
-  token?: string;
-  url?: string;
-}
-
-async function readPortfile(): Promise<Portfile | null> {
-  try {
-    const raw = await readFile(PORTFILE, 'utf8');
-    return JSON.parse(raw) as Portfile;
-  } catch {
-    return null;
-  }
-}
 
 function metadeskDev(): Plugin {
   return {
@@ -73,17 +60,15 @@ function metadeskDev(): Plugin {
       // Tiny JSON endpoint so the injected bootstrap can read the portfile
       // without any build-time coupling to the launcher's disk layout.
       server.middlewares.use('/@metadesk/portfile', (_req: IncomingMessage, res: ServerResponse) => {
-        void readPortfile().then((pf) => {
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(pf ?? {}));
-        });
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(readPortfile(PORTFILE) ?? {}));
       });
 
       // Dynamic /api (and /thumbnails) proxy: re-reads the portfile on every
       // request, so the launcher can restart the server on a new port without
       // restarting Vite.
       const forward = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-        const pf = await readPortfile();
+        const pf = readPortfile(PORTFILE);
         if (pf === null) {
           res.statusCode = 503;
           res.setHeader('Content-Type', 'application/json');

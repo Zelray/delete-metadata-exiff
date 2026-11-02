@@ -61,6 +61,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { pollPortfile } from './lib/portfile.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(APP_ROOT, 'dist-desktop');
@@ -243,12 +244,14 @@ async function runCleanMachine() {
   diagOf = () =>
     `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}\n--- sanitized PATH ---\n${env.PATH}`;
 
-  const portfile = await pollFor(
-    () => readJsonSafe(portfilePath),
-    60_000,
-    'the app never wrote a portfile with the sanitized PATH',
-    () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  );
+  // Issue #17: field rules live in scripts/lib/portfile.mjs.
+  const portfile = await pollPortfile(portfilePath, {
+    timeoutMs: 60_000,
+    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
+  }).catch((abortError) => {
+    throw new Error(`the app never wrote a portfile with the sanitized PATH (${abortError.message})`);
+  });
+  if (portfile === null) throw new Error('the app never wrote a portfile with the sanitized PATH');
   const bootMs = Date.now() - startedAt;
   step('boot', `${portfile.url} (server pid ${portfile.pid}) in ${(bootMs / 1000).toFixed(1)} s`);
 
@@ -396,12 +399,13 @@ async function runUpdateRehearsal() {
   });
   diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}`;
 
-  const portfile = await pollFor(
-    () => readJsonSafe(portfilePath),
-    60_000,
-    'the upgraded app never wrote a portfile',
-    () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  );
+  const portfile = await pollPortfile(portfilePath, {
+    timeoutMs: 60_000,
+    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
+  }).catch((abortError) => {
+    throw new Error(`the upgraded app never wrote a portfile (${abortError.message})`);
+  });
+  if (portfile === null) throw new Error('the upgraded app never wrote a portfile');
   step('boot', `${portfile.url} (server pid ${portfile.pid}, data dir = the folder's own data\\)`);
 
   if (!portfile.engine || path.relative(packageRoot, portfile.engine).startsWith('..')) {
@@ -799,14 +803,6 @@ async function fetchJson(url) {
     return { status: response.status, body };
   } catch (error) {
     return { status: 0, body: { error: String(error) } };
-  }
-}
-
-function readJsonSafe(filePath) {
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
   }
 }
 

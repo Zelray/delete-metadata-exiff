@@ -137,7 +137,13 @@ export function contractFindings(files = sourceFiles()) {
     function visit(node) {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
         const module = node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier) ? node.moduleSpecifier.text : null;
-        if (module && /^(bin|scripts)\//.test(file.path) && !isBuiltin(module)) add('launch-runtime-import', node, 'launch modules import Node builtins only');
+        // Issue #17: a RELATIVE specifier is first-party code shipped in the
+        // same tree (scripts/lib/*.mjs imports only Node builtins) — the
+        // dependency this rule guards against is an npm package (a bare,
+        // non-builtin specifier), which still trips here.
+        if (module && !module.startsWith('.') && /^(bin|scripts)\//.test(file.path) && !isBuiltin(module)) {
+          add('launch-runtime-import', node, 'launch modules import Node builtins only');
+        }
         const names = ts.isImportDeclaration(node) ? node.importClause?.namedBindings : node.exportClause;
         if (module && moduleName(module, file.path) === 'ui/src/api/client' && file.path !== RUNNER
           && names && (ts.isNamedImports(names) || ts.isNamedExports(names))) {
