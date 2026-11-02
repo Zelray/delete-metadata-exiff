@@ -52,6 +52,17 @@ To verify a downloaded zip before running it, compare its SHA-256 fingerprint wi
 in the release notes that come with the release
 (`docs\release\RELEASE-NOTES-v1.0.1.md` in the source folder).
 
+## How to remove MetaDesk
+
+Uninstalling removes the program itself: run `uninstall.exe` inside the MetaDesk folder, or use
+Windows Settings → Apps → Installed apps. One thing the uninstaller deliberately leaves behind is
+your `data` subfolder — the same "your data survives" rule the updater follows — so journals,
+settings, caches, and exported before-values would still be there if you reinstall later. If you
+want a fully clean machine instead, delete the folder after uninstalling: paste
+`%LOCALAPPDATA%\MetaDesk` into File Explorer's address bar and delete the `MetaDesk` folder it
+shows. (The `_original` backup copies that sit next to your photos are never touched by any of
+this — they belong to your photos, not to the program.)
+
 ## Starting MetaDesk
 
 The sections above cover the packaged program: double-click **`MetaDesk.exe`** in the
