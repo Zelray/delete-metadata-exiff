@@ -11,6 +11,7 @@ import { Segmented } from '../components/ui/controls';
 import { SupportCard } from './Settings/SupportCard';
 import type { ThemeChoice } from '../state/store';
 import type { RecoveryFixResult, RecoveryScanReport } from '../write/types';
+import { SETTINGS_HEADER_COPY } from '../write/copy';
 
 /**
  * Settings (route /settings): engine path + version + Verify, the theme
@@ -24,10 +25,7 @@ export function SettingsView() {
     <div className="mx-auto max-w-2xl space-y-6 p-6">
       <header className="space-y-1">
         <h1 className="text-lg font-semibold">Settings</h1>
-        <p className="text-xs text-muted-foreground">
-          The engine, the look, and the safety floors. The floors cannot be turned off — they are
-          what makes every write previewable and every change undoable.
-        </p>
+        <p className="text-xs text-muted-foreground">{SETTINGS_HEADER_COPY}</p>
       </header>
       <EngineCard />
       <AppearanceCard />

@@ -225,3 +225,25 @@ describe('Settings Support card — diagnostics bundle', () => {
     await unmount(root, container);
   });
 });
+
+describe('Settings safety copy', () => {
+  it('states the automatic-undo limit instead of claiming every change is undoable', async () => {
+    stubFetch((url) => {
+      if (url === '/api/health') return new Response(JSON.stringify(HEALTH), { status: 200 });
+      return new Response('{}', { status: 404 });
+    });
+
+    const { root, container } = renderSettings();
+    await flush();
+
+    const text = bodyText();
+    expect(text).toContain('every change is journalled with a verified backup');
+    expect(text).toContain('most changes can be auto-undone from History');
+    expect(text).toContain(
+      "If an original value contained line breaks, the batch card says it can't be auto-undone and points to the _original backup.",
+    );
+    expect(text).not.toContain('every change undoable');
+
+    await unmount(root, container);
+  });
+});

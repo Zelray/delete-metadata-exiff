@@ -27,3 +27,13 @@ export const UNDO_BLOCKED_TITLE =
 /** The per-card undo button's tooltip for a batch that CAN be auto-undone. */
 export const UNDO_TWO_STEP_TITLE =
   'Two-step: first the reverse diff, then your confirm. Undoing twice is refused by design.';
+
+/**
+ * Settings header (issue #11): backup and preview are universal safety floors,
+ * but automatic undo has a disclosed multiline-original exception. Keep those
+ * guarantees separate so this overview cannot promise more than History does.
+ */
+export const SETTINGS_HEADER_COPY =
+  'The engine, the look, and the safety floors. The floors cannot be turned off — every write is previewed, ' +
+  'every change is journalled with a verified backup, and most changes can be auto-undone from History. ' +
+  "If an original value contained line breaks, the batch card says it can't be auto-undone and points to the _original backup.";
