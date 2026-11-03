@@ -200,12 +200,13 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
           const result = await pipeline.execute(body.previewId, progressOptions);
           // A cancelled batch reports its cancellation as its own additive
           // frame before the completion payload (clients ignore unknown types).
-          if ((result.outcome as { cancelled?: boolean }).cancelled === true) {
+          // Issue #23: the cancelled arm is DECLARED on ExecuteResult — `in`
+          // narrowing replaces the old structural casts.
+          if ('cancelled' in result.outcome && result.outcome.cancelled === true) {
             send('batch-cancelled', {
               batchId: result.outcome.batchId,
-              cancelledAt: (result.outcome as { cancelledAt?: string }).cancelledAt,
-              notAttemptedFilePaths: (result.outcome as { notAttemptedFilePaths?: string[] })
-                .notAttemptedFilePaths,
+              cancelledAt: result.outcome.cancelledAt,
+              notAttemptedFilePaths: result.outcome.notAttemptedFilePaths,
             });
           }
           send('batch-complete', {

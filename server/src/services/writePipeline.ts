@@ -270,7 +270,12 @@ export interface ExecuteOptions {
 }
 
 export interface ExecuteResult {
-  outcome: BatchOutcome;
+  /**
+   * The batch outcome — a `CancelledBatchOutcome` when the cooperative cancel
+   * was honored between chunks (issue #23: the cancelled arm is DECLARED, so
+   * callers narrow with `'cancelled' in outcome` instead of structural casts).
+   */
+  outcome: BatchOutcome | CancelledBatchOutcome;
   /** The exact argv of the first executed chunk. */
   commandPreview: string[];
   /** Notes from manifest/summary cross-checking (honest noise, shown in UI). */
