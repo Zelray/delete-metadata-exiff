@@ -137,8 +137,9 @@ export type WritePipelineErrorCode =
   | 'batch_too_large'
   | 'already_undone'
   /** undo_blocked: the plan exists but can never run (a before-value had a line break).
-   *  undo_preview_required: the confirm step ran with no prepared plan (issue #15). */
-  | 'undo_blocked' | 'undo_preview_required';
+   *  undo_preview_required: the confirm step ran with no prepared plan (issue #15).
+   *  undo_in_progress: an undo of this batch is already executing (issue #13). */
+  | 'undo_blocked' | 'undo_preview_required' | 'undo_in_progress';
 
 export class WritePipelineError extends Error {
   readonly code: WritePipelineErrorCode;
@@ -370,6 +371,15 @@ export class WritePipeline {
    * abandoned confirm dialog costs nothing lasting.
    */
   private readonly pendingUndoPlans = new Map<string, { previewIds: string[]; createdAtMs: number }>();
+  /**
+   * Issue #13: batchIds whose undo is executing RIGHT NOW. Set synchronously
+   * at plan-consume time (the same atomic step that makes the double write
+   * impossible), cleared when the fan-out settles — on failure too, so a
+   * partial undo stays re-prepareable. Deliberately in-memory: it dies with
+   * the process, so a crashed undo leaves no stale claim and the journal +
+   * recovery keep owning interrupted-undo semantics.
+   */
+  private readonly inFlightUndos = new Set<string>();
 
   constructor(options: WritePipelineOptions) {
     this.engine = options.engine;
@@ -1124,12 +1134,23 @@ export class WritePipeline {
     // fails partway, a retry re-prepares — the honest step, because after a
     // partial undo the world (and therefore the truthful preview) has changed.
     this.pendingUndoPlans.delete(batchId);
-    const batches: UndoRunResult['batches'] = [];
-    for (const previewId of pending.previewIds) {
-      const result = await this.execute(previewId, options);
-      batches.push({ batchId: result.outcome.batchId, previewId, outcome: result.outcome, commandPreview: result.commandPreview });
+    // Issue #13: claim the batch for the whole fan-out. Concurrent undo doors
+    // (the preview step and rival confirms) consult this claim and refuse
+    // with `undo_in_progress` instead of claiming "nothing was executed"
+    // while these writes are in flight.
+    this.inFlightUndos.add(batchId);
+    try {
+      const batches: UndoRunResult['batches'] = [];
+      for (const previewId of pending.previewIds) {
+        const result = await this.execute(previewId, options);
+        batches.push({ batchId: result.outcome.batchId, previewId, outcome: result.outcome, commandPreview: result.commandPreview });
+      }
+      return { undone: true, batches, commandPreview: batches[0]?.commandPreview ?? [] };
+    } finally {
+      // Cleared on success AND failure — a partial undo must stay
+      // re-prepareable (the retry above), and no stale claim outlives the fan.
+      this.inFlightUndos.delete(batchId);
     }
-    return { undone: true, batches, commandPreview: batches[0]?.commandPreview ?? [] };
   }
 
   private async prepareUndoPlan(batchId: string): Promise<{
@@ -1146,6 +1167,18 @@ export class WritePipeline {
         'already_undone',
         'This batch has already been undone. Undoing it a second time would re-apply the change.',
         { undoBatchId: alreadyUndone },
+      );
+    }
+    // Issue #13: a concurrent undo of this batch may be MID-FLIGHT — its
+    // completed-undo record does not exist yet, so the journal check above
+    // passes and the batch still looks undoable. The in-memory claim (set at
+    // consume time) is the honest refusal: no undo door may run against a
+    // batch whose reverse writes are executing right now.
+    if (this.inFlightUndos.has(batchId)) {
+      throw new WritePipelineError(
+        'undo_in_progress',
+        'An undo of this batch is already running — its writes are in progress, so this second attempt was refused and nothing was applied twice. When it finishes, the batch shows as already undone.',
+        { batchId },
       );
     }
     const plan = await this.journal.undoPlan(batchId);

@@ -539,6 +539,9 @@ function mapWriteError(error: unknown): MappedError {
       // line, and the shared return below now serves `default` directly, so
       // this file stays at its ratcheted code-line allowance.
       case 'undo_blocked': return { statusCode: 400, code: 'undo_blocked', message: error.message };
+      // Issue #13: a rival undo of the same batch is mid-flight — a conflict,
+      // not a bad request; the message carries the honest wording.
+      case 'undo_in_progress': return { statusCode: 409, code: 'undo_in_progress', message: error.message };
       case 'batch_too_large':
       case 'validation':
       case 'undo_unavailable':

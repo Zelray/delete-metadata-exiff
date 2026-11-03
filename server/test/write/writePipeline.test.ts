@@ -394,6 +394,81 @@ describe('undo', () => {
     await expect(harness.pipeline.undoBatch(batchId)).rejects.toMatchObject({ code: 'already_undone' });
   });
 
+  // Issue #13 (double-undo TOCTOU): C1's plan consumption already makes the
+  // double WRITE impossible — grabbing the prepared plan and deleting it are
+  // synchronous (no await between them), so of two concurrent undoBatch calls
+  // exactly one can ever claim the plan and execute. What survived the #15
+  // redesign is the HONESTY gap: the loser consults the journal, finds no
+  // completed undo yet, and reports "undo_preview_required … nothing was
+  // executed" — while the winner's writes are in flight, which is false.
+  // The fix is an in-memory in-flight claim set at consume time, consulted by
+  // BOTH undo doors, refusing with `undo_in_progress`. Codes are asserted as
+  // plain values (not .rejects.toMatchObject) so a pre-change failure
+  // surfaces as an AssertionError — proven-red accepts only assertion
+  // evidence, never a raw crash.
+  it('refuses a concurrent second undo of the same batch with undo_in_progress', async () => {
+    const file = await fixture.put('undo-race.png');
+    await writeSdMetadata(file);
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'race edit' }];
+    const env = await harness.pipeline.preview({ files: [file], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    const batchId = res.outcome.batchId;
+    await harness.pipeline.prepareUndo(batchId);
+
+    // Two confirms invoked in the same tick — the race the issue names. The
+    // consume step is synchronous before the first await, so exactly one
+    // claims the plan; the other must refuse and name the in-flight undo.
+    const first = harness.pipeline.undoBatch(batchId);
+    const secondCode = await harness.pipeline.undoBatch(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(secondCode).toBe('undo_in_progress');
+    const undone = await first;
+    expect(undone.undone).toBe(true);
+  });
+
+  // The race window covers step 1 as well: while an undo of this batch is
+  // running, a second prepareUndo must not build a fresh confirm dialog.
+  it('refuses the preview step while an undo of the same batch is in flight', async () => {
+    const file = await fixture.put('undo-race-preview.png');
+    await writeSdMetadata(file);
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'race preview edit' }];
+    const env = await harness.pipeline.preview({ files: [file], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    const batchId = res.outcome.batchId;
+    await harness.pipeline.prepareUndo(batchId);
+
+    const running = harness.pipeline.undoBatch(batchId);
+    const prepareCode = await harness.pipeline.prepareUndo(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(prepareCode).toBe('undo_in_progress');
+    await running;
+  });
+
+  // Regression guard for the fix's lifecycle: once the undo FINISHES, the
+  // in-flight claim must be gone (cleared even on partial failure) and the
+  // journal's completed-undo check must govern again — a post-flight attempt
+  // hears `already_undone`, the settled truth, never a stale in-flight code.
+  it('reports already_undone again after an in-flight undo finishes', async () => {
+    const file = await fixture.put('undo-race-after.png');
+    await writeSdMetadata(file);
+    const edits = [{ tag: 'PNG:Description', op: 'set' as const, value: 'race after edit' }];
+    const env = await harness.pipeline.preview({ files: [file], edits });
+    const res = await harness.pipeline.execute(env.preview.previewId);
+    const batchId = res.outcome.batchId;
+    await harness.pipeline.prepareUndo(batchId);
+    await harness.pipeline.undoBatch(batchId);
+
+    const prepareCode = await harness.pipeline.prepareUndo(batchId).then(
+      () => 'no_error',
+      (error) => (error as { code?: string }).code ?? 'no_code',
+    );
+    expect(prepareCode).toBe('already_undone');
+  });
+
   // Issue #4: a batch whose ORIGINAL value contained line breaks writes fine
   // (the forward edit is a plain single-line set), but its undo can never run
   // — the reverse write would have to put a multiline value back, which the
