@@ -1317,3 +1317,44 @@ server behavior tests, no e2e).
 Evidence: red 2 failed as AssertionErrors; green 8/8 undo tests;
 GATES_OK all 8 steps serially; RATCHET_OK at the raised allowances;
 instruction 0; pre-commit hook green at commit time.
+
+### 10.12 Issue #11 Settings undo overview honesty (local main, commit 7467911)
+
+FIX: `SettingsView` no longer claims that every change is undoable. Its whole
+header paragraph now comes from `SETTINGS_HEADER_COPY` in `ui/src/write/copy.ts`
+(C3). The copy keeps the preview and verified-backup guarantees, says most
+changes can be auto-undone from History, and names the exception: an original
+value containing line breaks cannot be auto-undone. It points to the batch card
+and the `_original` backup instead of implying that automatic undo always works.
+
+HELP REVIEW: both MD8 mirrors already disclose the multiline limitation and the
+`_original` recovery path (`resources/help/metadesk-help.md` and
+`ui/src/shell/HelpOverlay.tsx`). Neither changed. No other universal-undo claim
+was found in the UI or product help.
+
+TEST: `ui/src/views/Settings/support.test.tsx` mounts the complete Settings
+surface and asserts the rendered backup, automatic-undo, multiline-exception,
+and recovery wording. The first version failed by assertion on the pre-fix copy
+(1 failed | 3 passed). An independent reviewer then required the explicit
+multiline and auto-undo wording rather than the first draft's vague "almost
+all" phrasing. The strengthened test also failed by assertion before that exact
+revision, then passed. Final focused result: 4/4.
+
+REVIEW: the reviewer's only finding was the incomplete first replacement. The
+implemented revision added the required multiline, automatic-undo, and recovery
+facts and strengthened the test alongside them. A scoped re-review inspected
+`ui/src/write/copy.ts` and `ui/src/views/Settings/support.test.tsx`, then returned
+ADDRESSED. The finding and resolution are recorded in
+`../.unlazy/issue-11-settings-undo/REVIEW.md`.
+
+GATES: full `GATES_OK`, all eight steps serially after the final wording: server
+328/328, UI 119/119, framework 42/42, typecheck, build, instruction gate,
+ratchet, and lifecycle contract. The copy-module move removed one hard-coded
+Settings literal. `ratchet --update` locked SettingsView 77→76 and the global
+i18next count 953→952. Pre-commit instruction and ratchet gates passed again.
+
+SCOPE: Settings copy, its rendered regression test, and the reduced literal
+baseline. No application behavior or navigation changed, so MD16 needs no new
+end-to-end scenario. The pre-existing Cargo lockfile edit, research notes, and
+TypeScript build artifacts were left out of the commit. Issue #11 stays open
+pending the owner's push.
