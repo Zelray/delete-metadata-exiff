@@ -17,6 +17,7 @@ import { WritePipeline } from './services/writePipeline.js';
 import { ScrubService } from './services/scrub.js';
 import { GpsStripService } from './services/gpsStrip.js';
 import { Journal } from './services/journal.js';
+import { RecoveryService } from './services/recovery.js';
 
 export type WriteMode = 'read-only' | 'write-unlocked';
 
@@ -64,10 +65,17 @@ export class WriteSubsystem {
   readonly pipeline: WritePipeline | null;
   readonly scrub: ScrubService | null;
   readonly gpsStrip: GpsStripService | null;
+  /**
+   * THE recovery service, built on the ONE journal (issue #24: the recovery
+   * routes used to construct their own outside the subsystem — this is the
+   * construction site the module header always promised).
+   */
+  readonly recovery: RecoveryService;
 
   constructor(options: WriteSubsystemOptions) {
     this.announce = options.announce;
     this.journal = new Journal({ dataDir: options.dataDir });
+    this.recovery = new RecoveryService({ dataDir: options.dataDir, journal: this.journal });
     this.pipeline =
       options.engine !== null
         ? new WritePipeline({

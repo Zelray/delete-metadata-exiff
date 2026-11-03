@@ -16,15 +16,13 @@
  * invocations (the interactive -delete_original prompt is never triggered).
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { RecoveryService, RecoveryError, type FixAction } from '../services/recovery.js';
-import { Journal } from '../services/journal.js';
+import { RecoveryError, type FixAction, type RecoveryService } from '../services/recovery.js';
 import { PathRejectedError, assertSafePath } from '../services/pathGuard.js';
 import { sendError } from './api.js';
 
 export interface RecoveryRouteDeps {
-  dataDir: string;
-  /** The ONE shared journal (the same instance the write pipeline records to). */
-  journal: Journal;
+  /** THE recovery service, from the ONE write subsystem (issue #24). */
+  recovery: RecoveryService;
 }
 
 interface FixBody {
@@ -37,8 +35,7 @@ interface FixBody {
 }
 
 export function registerRecoveryRoutes(app: FastifyInstance, deps: RecoveryRouteDeps): void {
-  const journal = deps.journal;
-  const recovery = new RecoveryService({ dataDir: deps.dataDir, journal });
+  const recovery = deps.recovery;
 
   app.get(
     '/api/recovery/scan',

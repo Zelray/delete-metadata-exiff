@@ -1,7 +1,7 @@
 {
   "version": 1,
   "counts": {
-    "filesOverLength": 15,
+    "filesOverLength": 14,
     "rule:lint:@typescript-eslint/ban-ts-comment": 0,
     "rule:lint:@typescript-eslint/no-array-constructor": 0,
     "rule:lint:@typescript-eslint/no-duplicate-enum-values": 0,
@@ -1343,10 +1343,10 @@
     "server/src/services/writePipeline.ts": 1063,
     "tauri/src-tauri/src/engine.rs": 503,
     "tauri/src-tauri/src/main.rs": 406,
-    "ui/src/api/client.ts": 468,
+    "ui/src/api/client.ts": 467,
     "ui/src/components/SaveReviewModal.tsx": 488,
     "ui/src/views/BatchPanel.tsx": 397,
     "ui/src/views/DetailViewer.tsx": 598,
-    "server/src/services/journal.ts": 407
+    "server/src/services/journal.ts": 394
   }
 }

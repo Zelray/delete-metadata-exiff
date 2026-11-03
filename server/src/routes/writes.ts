@@ -57,6 +57,9 @@ export interface WriteRouteDeps {
 const MAX_SCRUB_FILES = 1000;
 const EDIT_OPS: ReadonlySet<string> = new Set(['set', 'delete', 'append', 'remove']);
 
+/** The ONE no-engine answer (issue #24): a write surface without an engine is a 503, not a half-answer. */
+const engineUnavailable = (reply: FastifyReply): FastifyReply => sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+
 export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps): void {
   const write = deps.write;
   // Readonly views of the subsystem's state and services (null iff the
@@ -88,7 +91,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/write/preview',
     async (request: FastifyRequest<{ Body: PreviewBody }>, reply: FastifyReply) => {
       if (pipeline === null || gpsStrip === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
 
@@ -151,7 +154,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/write/execute',
     async (request: FastifyRequest<{ Body: ExecuteBody }>, reply: FastifyReply) => {
       if (pipeline === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
       if (typeof body.previewId !== 'string' || body.previewId.length === 0) {
@@ -247,7 +250,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/write/cancel',
     async (request: FastifyRequest<{ Body: CancelBody }>, reply: FastifyReply) => {
       if (pipeline === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
       if (typeof body.batchId !== 'string' || body.batchId.length === 0) {
@@ -272,7 +275,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/write/undo',
     async (request: FastifyRequest<{ Body: UndoBody }>, reply: FastifyReply) => {
       if (pipeline === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
       if (typeof body.batchId !== 'string' || body.batchId.length === 0) {
@@ -333,7 +336,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/scrub/preview',
     async (request: FastifyRequest<{ Body: ScrubPreviewBody }>, reply: FastifyReply) => {
       if (scrub === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
       if (!Array.isArray(body.files) || body.files.some((f) => typeof f !== 'string')) {
@@ -364,7 +367,7 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
     '/api/scrub/execute',
     async (request: FastifyRequest<{ Body: ScrubExecuteBody }>, reply: FastifyReply) => {
       if (scrub === null) {
-        return sendError(reply, 503, 'engine_unavailable', 'The exiftool engine is not running.');
+        return engineUnavailable(reply);
       }
       const body = request.body ?? {};
       if (!Array.isArray(body.files) || body.files.some((f) => typeof f !== 'string')) {

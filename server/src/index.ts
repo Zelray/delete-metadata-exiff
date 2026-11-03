@@ -237,7 +237,7 @@ export async function buildServer(options: BuildServerOptions): Promise<BuildSer
   // write subsystem. Registered after the read routes; write routes self-gate
   // on the session unlock state and the single-writer lock.
   registerWriteRoutes(app, { write });
-  registerRecoveryRoutes(app, { dataDir: config.dataDir, journal: write.journal });
+  registerRecoveryRoutes(app, { recovery: write.recovery });
   // Diagnostics support bundle (leaf 2.2.1) — rides the same request gates.
   registerDiagnosticsRoutes(app, {
     dataDir: config.dataDir,
