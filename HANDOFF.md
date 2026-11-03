@@ -1230,3 +1230,42 @@ the writePipeline shrink.
 
 Proof: SseBridge 3/3; UI 15 files; write suite green; typecheck 0;
 instruction 0; RATCHET_OK; GATES_OK 8 steps. Commit 2405363.
+
+### 10.10 The small finds (issue #24, local main) — the review stream COMPLETE
+
+Code fixes (commits c222116 + e04210a):
+- **client.ts one credentials door**: `request()` no longer applies the token
+  via `tokenValue()` directly; it rides `authHeaders()` like every other
+  caller. The token is applied in ONE place.
+- **`journal.latestCompletedBatchId` DELETED** (zero callers, typecheck-
+  proven; `getPreview` was already deleted in C1). journal.ts is back UNDER
+  the 400-line cap (filesOverLength 15→14 locked).
+- **The SERVER's explainFailure DELETED** — the review said "a finished
+  feature nobody receives"; investigation found the UI copy IS wired
+  (ResultsReport.tsx calls it). The unwired copy was the SERVER's
+  (writePipeline imports only other results.js helpers). Resolution: delete
+  the server copy + its tests; `ui/src/write/failures.ts` is now the single
+  source of the wording (header comment updated). No user-visible change.
+- **One `engineUnavailable(reply)` helper** in writes.ts replaces six
+  identical null→503 hand-rolled gates (metadata.ts keeps its own — different
+  message/domain).
+- **`write.recovery`**: WriteSubsystem constructs RecoveryService on the ONE
+  journal (the construction its header always promised); recovery routes
+  consume it (`RecoveryRouteDeps = {recovery}`), no second construction.
+
+Deliberate non-code outcomes:
+- **Save Review mounted by five views (revisited)**: KEEP the trade. It buys
+  standalone view tests without mounting the whole app; the risk (a forgotten
+  mount = a route with no consent gate) is carried by the existing partition
+  test that pins the hand-listed route set. Any NEW write-firing view must be
+  added to that set in the same change — the partition test fails otherwise.
+  Not a defect today; no code change.
+- **METADESK_* env-knob list enumerated five times**: explicitly NOT fixed
+  piecemeal — it rides the deferred config-channel decision (KNOWN-GAP-1).
+  The known miss (METADESK_WATCHER_DEBOUNCE_MS) is a symptom of that deferred
+  decision, not a standalone bug to patch.
+
+This completes the 2026-11-02 architecture review stream: C1-C9 + all six
+small finds, ten issues (#15-#24), every one with red-first or
+disclosed-characterization tests, gates green throughout, all on local main
+unpushed (MD12).
