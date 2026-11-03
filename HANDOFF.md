@@ -1177,3 +1177,28 @@ the weak asserts independently.
 
 Proof: historyView tests red-first (missing method) then green; write suite
 138/138; typecheck 0; instruction 0; GATES_OK 8 steps.
+
+### 10.8 C8 — tag-family facts get a home beside exifPath (issue #22, local main)
+
+New `server/src/services/tagFamilies.ts` (pure, policy-free; +
+`server/test/tagFamilies.test.ts`, 11 tests, red-first): the ONE home for
+exif group-family knowledge.
+- `matchesTagKey(actualKey, requestedTag)` — moved VERBATIM from
+  writePipeline (which exported but never called it — it was born in the
+  wrong home, which is why readback needed the deliberate ESM cycle).
+- `GROUP_FAMILY_ACCEPT` — the one family table, moved verbatim.
+- `groupFamilyBase(group)` — DERIVED from the table (inverse lookup):
+  ifd0/gps/exififd/subifd/interopifd -> exif; unknown group -> itself
+  (exact-match fallback). scrub's hand-maintained GROUP_TO_BASE is DELETED;
+  the two facts cannot drift apart by construction.
+
+Consumers rewired (5 files): writePipeline (table + function gone,
+1084→1063 code lines — headroom recovered after C1/C3 spent the budget),
+readback.ts (THE CYCLE IS GONE — no more writePipeline import, comment and
+all), gpsStrip.ts + scrub.ts (split imports), gpsStrip.test.ts. scrub's
+canonicalWipeTag now consults groupFamilyBase then falls back to bare-name
+matching, as before.
+
+Proof: tagFamilies tests red-first (missing module) then 11/11; write suite
+green; typecheck 0; instruction 0; GATES_OK 8 steps; ratchet --update locked
+the writePipeline shrink.
