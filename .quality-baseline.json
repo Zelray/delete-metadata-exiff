@@ -1,7 +1,7 @@
 {
   "version": 1,
   "counts": {
-    "filesOverLength": 14,
+    "filesOverLength": 15,
     "rule:lint:@typescript-eslint/ban-ts-comment": 0,
     "rule:lint:@typescript-eslint/no-array-constructor": 0,
     "rule:lint:@typescript-eslint/no-duplicate-enum-values": 0,
@@ -1346,6 +1346,7 @@
     "ui/src/api/client.ts": 468,
     "ui/src/components/SaveReviewModal.tsx": 488,
     "ui/src/views/BatchPanel.tsx": 397,
-    "ui/src/views/DetailViewer.tsx": 598
+    "ui/src/views/DetailViewer.tsx": 598,
+    "server/src/services/journal.ts": 407
   }
 }

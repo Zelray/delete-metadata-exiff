@@ -45,7 +45,6 @@ import { PathRejectedError } from '../services/pathGuard.js';
 import { WritePipelineError, type ExecuteOptions } from '../services/writePipeline.js';
 import { SCRUB_CONFIRMATION_PHRASE } from '../services/scrub.js';
 import { GPS_CONFIRMATION_PHRASE } from '../services/gpsStrip.js';
-import type { BatchStartRecord } from '../services/journal.js';
 import type { WriteSubsystem } from '../writeSubsystem.js';
 import { sendError } from './api.js';
 import { writeSseFrame } from './events.js';
@@ -312,32 +311,12 @@ export function registerWriteRoutes(app: FastifyInstance, deps: WriteRouteDeps):
   app.get(
     '/api/write/history',
     async (request: FastifyRequest<{ Querystring: { limit?: string } }>, reply: FastifyReply) => {
+      // Issue #21: the journal answers History in one query — the extras and
+      // the backup verification are batch work inside the journal module; the
+      // route owns only the HTTP concerns (the limit param and the envelope).
       const limitRaw = Number.parseInt(request.query.limit ?? '', 10);
       const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 20;
-      const batchIds = await journal.listBatchIds(limit);
-      const batches: Array<Record<string, unknown>> = [];
-      for (const batchId of batchIds) {
-        const history = await journal.batchHistory(batchId);
-        if (history === null) continue;
-        // Additive history fields (leaf 1.1.4b): destructive flows carry the
-        // scrub/strip id and the pre-write sidecar export path on their
-        // batch-start record, restated here for the History view.
-        const { records } = await journal.readBatch(batchId);
-        const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start');
-        const extras: Record<string, unknown> = {};
-        if (start?.scrubId !== undefined) extras['scrubId'] = start.scrubId;
-        if (start?.destructive?.exportPath !== undefined) {
-          extras['exportedValuesPath'] = start.destructive.exportPath;
-        }
-        // Verified chips: each backup is hashed against the journal record now.
-        const backups = [];
-        for (const outcome of history.outcomes) {
-          if (outcome.backup === undefined) continue;
-          const verification = await journal.verifyBackup(outcome.backup);
-          backups.push({ filePath: outcome.filePath, backup: outcome.backup, verified: verification.verified });
-        }
-        batches.push({ ...history, ...extras, backups });
-      }
+      const batches = await journal.historyView(limit);
       return reply.code(200).send({
         batches,
         writeUnlocked: write.writeUnlocked,

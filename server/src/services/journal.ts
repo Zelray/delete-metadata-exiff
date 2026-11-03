@@ -154,6 +154,28 @@ export interface BatchHistory {
   undoBlocked: boolean;
 }
 
+/**
+ * What the History screen shows for one batch: the deep BatchHistory fields
+ * plus the additive extras that used to be assembled by hand in the history
+ * route (issue #21, arch-review Candidate 7). The extras and the backup
+ * verification are batch work — they live in the journal, and the route
+ * forwards the view instead of re-reading records and hashing backups inside
+ * the request.
+ */
+export interface BatchHistoryView extends BatchHistory {
+  /** AI-scrub/strip id, when the batch came from one (additive, leaf 1.1.4b). */
+  scrubId?: string;
+  /** The pre-write sidecar export path for destructive flows (additive). */
+  exportedValuesPath?: string;
+  /**
+   * Verified chips: one row per file whose outcome carried a backup, hashed
+   * against the journal record NOW (missing or tampered backup -> false —
+   * the chip must stay honest, not crash the view).
+   */
+  backups: Array<{ filePath: string; backup: BackupRecord; verified: boolean }>;
+}
+
+
 export interface BackupVerification {
   verified: boolean;
   /** sha256 actually read from disk, when the backup exists. */
@@ -302,8 +324,14 @@ export class Journal {
       .map((b) => b.batchId);
   }
 
-  /** Build the History view for one batch. */
-  async batchHistory(batchId: string): Promise<BatchHistory | null> {
+  /**
+   * Build the History view for one batch (issue #21): ONE read of the records
+   * produces everything the History screen shows — the deep counts/outcomes/
+   * undo state, the additive extras lifted off the batch-start record, and
+   * each backup verified against the file on disk (batch work INSIDE the
+   * journal; the route forwards).
+   */
+  async batchHistory(batchId: string): Promise<BatchHistoryView | null> {
     const { records } = await this.readBatch(batchId);
     if (records.length === 0) return null;
     const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start') ?? null;
@@ -330,6 +358,15 @@ export class Journal {
       failed: outcomes.filter((o) => o.status === 'failed').length,
     };
 
+    // Verified chips: hash each carried backup against the journal record.
+    // A missing or tampered backup verifies FALSE — the chip stays honest.
+    const backups: BatchHistoryView['backups'] = [];
+    for (const outcome of outcomes) {
+      if (outcome.backup === undefined) continue;
+      const verification = await this.verifyBackup(outcome.backup);
+      backups.push({ filePath: outcome.filePath, backup: outcome.backup, verified: verification.verified });
+    }
+
     // One plan powers both flags: `undoable` means the plan is non-empty;
     // `undoBlocked` means the plan can never run (see undoBlockReason). They
     // are deliberately independent — a blocked batch still HAS something to
@@ -346,7 +383,26 @@ export class Journal {
       outcomes,
       undoable: plan.length > 0,
       undoBlocked: undoBlockReason(plan) !== null,
+      ...(start?.scrubId !== undefined ? { scrubId: start.scrubId } : {}),
+      ...(start?.destructive?.exportPath !== undefined
+        ? { exportedValuesPath: start.destructive.exportPath }
+        : {}),
+      backups,
     };
+  }
+
+  /**
+   * The History screen's truth in ONE query (issue #21): the N most recent
+   * batches as full views. The history route forwards this instead of
+   * hand-assembling from raw records + a per-file sha256 loop.
+   */
+  async historyView(limit = 20): Promise<BatchHistoryView[]> {
+    const views: BatchHistoryView[] = [];
+    for (const batchId of await this.listBatchIds(limit)) {
+      const view = await this.batchHistory(batchId);
+      if (view !== null) views.push(view);
+    }
+    return views;
   }
 
   /** Most recent batch that has a batch-end record (one-click undo target). */

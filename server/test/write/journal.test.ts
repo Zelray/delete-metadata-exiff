@@ -284,3 +284,73 @@ describe('scrub export', () => {
     expect(() => journal.batchPath('..\\evil')).toThrow(/Invalid batch id/);
   });
 });
+
+describe('historyView — the History screen in one query (issue #21)', () => {
+  it('returns enriched views: extras lifted off batch-start, backups verified inside the journal', async () => {
+    // A batch whose backup is a REAL file on disk, so the Verified chip can
+    // be true — and a destructive batch-start carrying the additive extras.
+    const backupPath = path.join(root, 'view-backup_original');
+    await writeFile(backupPath, PNG_1X1);
+    const viewFile = 'C:\\p\\v.png';
+    await journal.recordBatchStart({
+      batchId: 'wb_view1',
+      mode: 'scrub',
+      description: 'scrub batch',
+      files: [viewFile],
+      argv: ['-XMP:Title=X', viewFile],
+      edits: [{ tag: 'XMP:Title', op: 'set', value: 'X' }],
+      scrubId: 'sc_view1',
+      destructive: { scope: 'selection', confirmationPhrase: 'SCRUB', exportPath: path.join(root, 'export.json') },
+    });
+    await journal.recordIntent({
+      batchId: 'wb_view1',
+      filePath: viewFile,
+      edits: [{ tag: 'XMP:Title', op: 'set', value: 'X' }],
+      before: {},
+      expectedAfter: {},
+      diffs: [],
+    });
+    await journal.recordResult({
+      batchId: 'wb_view1',
+      filePath: viewFile,
+      outcome: {
+        filePath: viewFile,
+        status: 'updated',
+        warnings: [],
+        errors: [],
+        backup: {
+          path: backupPath,
+          sizeBytes: PNG_1X1.length,
+          sha256: createHash('sha256').update(PNG_1X1).digest('hex'),
+          createdAt: new Date().toISOString(),
+        },
+        verified: true,
+      },
+    });
+
+    const views = await journal.historyView(10);
+    const view = views.find((v) => v.batchId === 'wb_view1');
+    // Assert VALUES, not existence: if the view were missing, every one of
+    // these fails with the actual-vs-undefined mismatch.
+    expect(view?.scrubId).toBe('sc_view1');
+    expect(view?.exportedValuesPath).toBe(path.join(root, 'export.json'));
+    expect(view?.backups).toHaveLength(1);
+    expect(view?.backups[0]?.filePath).toBe(viewFile);
+    expect(view?.backups[0]?.verified).toBe(true);
+  });
+
+  it('a backup that is missing or tampered verifies FALSE in the view (chip honesty)', async () => {
+    // wb_test1 (seeded above) points its backup at C:\p\a.png_original,
+    // which does not exist: the chip must read false, not crash the view.
+    const views = await journal.historyView(10);
+    const view = views.find((v) => v.batchId === 'wb_test1');
+    expect(view?.backups).toHaveLength(1);
+    expect(view?.backups[0]?.verified).toBe(false);
+  });
+
+  it('honors the limit (the route forwards, the journal decides)', async () => {
+    const views = await journal.historyView(1);
+    expect(views).toHaveLength(1);
+    expect(views[0]?.batchId.length).toBeGreaterThan(0);
+  });
+});
