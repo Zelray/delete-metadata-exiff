@@ -31,10 +31,9 @@
 import { buildJsonReadArgs } from '../engine/argBuilder.js';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { normalizeExifPath } from './exifPath.js';
-// Deliberate ESM cycle: writePipeline imports this module for readTagValues,
-// and this import pulls matchesTagKey back from it. Both are function
-// declarations referenced only at call time, so the cycle resolves safely.
-import { matchesTagKey } from './writePipeline.js';
+// Issue #22: family facts live in tagFamilies — the deliberate ESM cycle
+// through writePipeline is gone.
+import { matchesTagKey } from './tagFamilies.js';
 
 /** Files per metadata read round trip. */
 const READ_BATCH = 100;

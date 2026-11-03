@@ -38,7 +38,8 @@ import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { RAW_EXTENSIONS, readAllTierByPath, writeDestructiveExport } from './destructiveFlow.js';
 import { newRecordId } from './journal.js';
 import { normalizeExifPath } from './exifPath.js';
-import { matchesTagKey, WritePipeline, WritePipelineError, type ExecuteResult } from './writePipeline.js';
+import { groupFamilyBase, matchesTagKey } from './tagFamilies.js';
+import { WritePipeline, WritePipelineError, type ExecuteResult } from './writePipeline.js';
 
 /** The phrase the user must type to run a scrub. Stable and documented. */
 export const SCRUB_CONFIRMATION_PHRASE = 'REMOVE AI METADATA';
@@ -406,39 +407,22 @@ export class ScrubService {
 }
 
 /**
- * Family-1 group -> the wipe-tag group base it belongs to. A detected
- * `IFD0:Software` must map to the `EXIF:Software` wipe tag, not to
- * `PNG:Software` — matching by bare tag name alone would collapse distinct
- * groups and silently fail to delete.
+ * Map a detected read key to the canonical write-form wipe tag (issue #22:
+ * the family knowledge lives in tagFamilies — a detected `IFD0:Software`
+ * maps to the `EXIF:Software` wipe tag, never `PNG:Software`; matching by
+ * bare tag name alone would collapse distinct groups and silently fail to
+ * delete). Unknown groups fall through to the bare-name match, as before.
  */
-const GROUP_TO_BASE: Readonly<Record<string, string>> = Object.freeze({
-  exif: 'exif',
-  ifd0: 'exif',
-  exififd: 'exif',
-  gps: 'exif',
-  subifd: 'exif',
-  interopifd: 'exif',
-  png: 'png',
-  iptc: 'iptc',
-  'xmp-dc': 'xmp-dc',
-  'xmp-xmp': 'xmp-xmp',
-  'xmp-photoshop': 'xmp-photoshop',
-  'xmp-mwg-rs': 'xmp-mwg-rs',
-});
-
-/** Map a detected read key to the canonical write-form wipe tag. */
 function canonicalWipeTag(detectedTag: string): string {
   const colonIndex = detectedTag.indexOf(':');
   const group = (colonIndex > 0 ? detectedTag.slice(0, colonIndex) : '').toLowerCase();
   const bare = (detectedTag.split(':').pop() ?? '').toLowerCase();
-  const base = GROUP_TO_BASE[group];
-  if (base !== undefined) {
-    for (const wipeTag of SCRUB_WIPE_TAGS) {
-      const wipeColon = wipeTag.indexOf(':');
-      const wipeGroup = (wipeColon > 0 ? wipeTag.slice(0, wipeColon) : '').toLowerCase();
-      if (wipeGroup === base && (wipeTag.split(':').pop() ?? '').toLowerCase() === bare) {
-        return wipeTag;
-      }
+  const base = groupFamilyBase(group);
+  for (const wipeTag of SCRUB_WIPE_TAGS) {
+    const wipeColon = wipeTag.indexOf(':');
+    const wipeGroup = (wipeColon > 0 ? wipeTag.slice(0, wipeColon) : '').toLowerCase();
+    if (wipeGroup === base && (wipeTag.split(':').pop() ?? '').toLowerCase() === bare) {
+      return wipeTag;
     }
   }
   for (const wipeTag of SCRUB_WIPE_TAGS) {

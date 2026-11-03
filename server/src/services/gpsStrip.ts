@@ -27,7 +27,8 @@ import type { ScrubScope, TagDiff, TagEdit } from '@metadesk/shared';
 import type { ExifToolSession } from '../engine/exiftoolSession.js';
 import { RAW_EXTENSIONS, readAllTierByPath, writeDestructiveExport } from './destructiveFlow.js';
 import { newRecordId } from './journal.js';
-import { matchesTagKey, WritePipelineError, type PreviewEnvelope } from './writePipeline.js';
+import { matchesTagKey } from './tagFamilies.js';
+import { WritePipelineError, type PreviewEnvelope } from './writePipeline.js';
 
 /** The phrase the user must type to run a GPS strip. Stable and documented. */
 export const GPS_CONFIRMATION_PHRASE = 'REMOVE GPS DATA';

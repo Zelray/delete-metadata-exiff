@@ -329,34 +329,6 @@ interface StoredPreview {
   scrubId?: string;
 }
 
-/**
- * Family-1 groups a written tag may legitimately appear under when read back.
- * Writing `EXIF:Software` surfaces as `IFD0:Software` in a `-G1` read, etc.
- */
-const GROUP_FAMILY_ACCEPT: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  exif: Object.freeze(['exif', 'ifd0', 'exififd', 'gps', 'interopifd', 'subifd']),
-  png: Object.freeze(['png']),
-  iptc: Object.freeze(['iptc']),
-  'xmp-dc': Object.freeze(['xmp-dc']),
-  'xmp-xmp': Object.freeze(['xmp-xmp']),
-  'xmp-photoshop': Object.freeze(['xmp-photoshop']),
-  'xmp-mwg-rs': Object.freeze(['xmp-mwg-rs']),
-});
-
-/** True when `actualKey` (a -G1 read key) can be the requested tag. */
-export function matchesTagKey(actualKey: string, requestedTag: string): boolean {
-  const colonIndex = requestedTag.indexOf(':');
-  const reqGroup = (colonIndex > 0 ? requestedTag.slice(0, colonIndex) : '').toLowerCase();
-  const reqName = (requestedTag.split(':').pop() ?? '').toLowerCase();
-  const actualColon = actualKey.indexOf(':');
-  const actualGroup = (actualColon > 0 ? actualKey.slice(0, actualColon) : '').toLowerCase();
-  const actualName = (actualColon > 0 ? actualKey.slice(actualColon + 1) : actualKey).toLowerCase();
-  if (actualName !== reqName) return false;
-  if (reqGroup === '') return true;
-  const accept = GROUP_FAMILY_ACCEPT[reqGroup] ?? Object.freeze([reqGroup]);
-  return accept.includes(actualGroup);
-}
-
 export interface WritePipelineOptions {
   engine: ExifToolSession;
   /** Mutable app state dir (journal + scratch + write temp files). */

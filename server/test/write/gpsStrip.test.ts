@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { GPS_CONFIRMATION_PHRASE, GpsStripService, GPS_WIPE_TAGS } from '../../src/services/gpsStrip.js';
-import { matchesTagKey, WritePipelineError } from '../../src/services/writePipeline.js';
+import { matchesTagKey } from '../../src/services/tagFamilies.js';
+import { WritePipelineError } from '../../src/services/writePipeline.js';
 import { makePipeline, makeWriteFixture, readTagsOnce, writeGpsMetadata, type PipelineHarness, type WriteFixture } from './helpers.js';
 import { PNG_1X1 } from '../helpers.js';
 
