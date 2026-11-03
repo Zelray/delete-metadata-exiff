@@ -405,21 +405,6 @@ export class Journal {
     return views;
   }
 
-  /** Most recent batch that has a batch-end record (one-click undo target). */
-  async latestCompletedBatchId(mode?: string): Promise<string | null> {
-    for (const batchId of await this.listBatchIds(200)) {
-      const { records } = await this.readBatch(batchId);
-      const end = records.find((r): r is BatchEndRecord => r.kind === 'batch-end');
-      if (end === undefined || end.interrupted === true) continue;
-      if (mode !== undefined) {
-        const start = records.find((r): r is BatchStartRecord => r.kind === 'batch-start');
-        if (start?.mode !== mode) continue;
-      }
-      return batchId;
-    }
-    return null;
-  }
-
   /**
    * Batches that started but never finished, plus the files still awaiting a
    * completion record. This is the interrupted-write detection the recovery

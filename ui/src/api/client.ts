@@ -193,8 +193,9 @@ async function readSse(
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set('Accept', 'application/json');
-  const token = tokenValue();
-  if (token !== '') headers.set('X-MetaDesk-Token', token);
+  // Issue #24: the token rides through the ONE credentials door (authHeaders)
+  // — this function used to apply it a second way, via tokenValue() directly.
+  for (const [key, value] of Object.entries(authHeaders())) headers.set(key, value);
   if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
 
   const response = await send(path, { ...init, headers });

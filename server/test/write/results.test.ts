@@ -1,13 +1,13 @@
 /**
  * Three-valued results: summary parsing from the engine's exact wording
  * (verified against the vendored source's printf formats), manifest
- * classification for a mixed batch, plain-English failure explanations, and
- * the retry-list policy.
+ * classification for a mixed batch, and the retry-list policy. (The
+ * plain-English failure explanations moved OUT of the server in issue #24 —
+ * ui/src/write/failures.ts is the one source of the wording.)
  */
 import { describe, expect, it } from 'vitest';
 import {
   classifyFiles,
-  explainFailure,
   parseSummary,
   retryList,
   summarizeConsistency,
@@ -99,30 +99,6 @@ describe('summarizeConsistency', () => {
       updated: ['C:/x/a.png'],
     });
     expect(notes).toEqual([]);
-  });
-});
-
-describe('explainFailure', () => {
-  it('explains a locked file (rename failure) with a concrete fix', () => {
-    const e = explainFailure('Error renaming C:/pics/a.png');
-    expect(e.code).toBe('file-locked');
-    expect(e.suggestedFix).toMatch(/Close photo viewers|pause OneDrive/i);
-  });
-
-  it('explains permission errors, missing files, unsupported tags, disk full, orphan temps', () => {
-    expect(explainFailure('Error: Permission denied - C:/x.png').code).toBe('permission-denied');
-    expect(explainFailure('Error: File not found - C:/x.png').code).toBe('file-missing');
-    expect(explainFailure("Warning: Tag 'PNG:Prompt' is not defined").code).toBe('unsupported-tag');
-    expect(explainFailure('Error: No space left on device').code).toBe('disk-full');
-    expect(explainFailure('Error: Temporary file already exists - C:/x.png').code).toBe(
-      'temporary-file-exists',
-    );
-  });
-
-  it('never throws on unrecognized messages (unknown-error fallback)', () => {
-    const e = explainFailure('something completely unexplained happened');
-    expect(e.code).toBe('unknown-error');
-    expect(e.title.length).toBeGreaterThan(0);
   });
 });
 

@@ -1,8 +1,9 @@
 /**
- * Plain-English failure explanations for the Results Report — a faithful port
- * of the server's services/results.ts EXPLANATION_RULES (the UI cannot import
- * server modules; the wording must stay verbatim so both surfaces speak with
- * one voice). Ordered most-specific first, exactly like the server list.
+ * Plain-English failure explanations for the Results Report — THE single
+ * source of the wording (issue #24). Born as a faithful port of the server's
+ * services/results.ts EXPLANATION_RULES; the server copy was never wired into
+ * any outcome or route and was deleted, leaving this module — wired into the
+ * Results Report — as the one implementation. Ordered most-specific first.
  */
 import type { WriteOutcome } from './types';
 
