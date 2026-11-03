@@ -1144,3 +1144,36 @@ Gotcha for the next agent: manifest names for a chunk are now
 `<stem>-err/-same/-<third>` derived INSIDE the seam; execute's local
 `wired` holds the paths (readManifest consumes them post-run). Do not
 re-derive manifest paths by hand anywhere — extend the seam.
+
+### 10.7 C7 — the journal answers History in one query (issue #21, local main)
+
+`batchHistory(batchId)` now returns `BatchHistoryView` (extends `BatchHistory`
+additively): `scrubId?`, `exportedValuesPath?`, and `backups: [{filePath,
+backup, verified}]` — ONE record read produces everything the History screen
+shows. New `journal.historyView(limit)` answers the screen's truth in one
+query (null batches skipped, most-recent-first). The `/api/write/history`
+route owns only HTTP concerns now (the limit param + the envelope); it
+forwards the query. What moved OUT of the route: the second `readBatch` per
+batch (extras now lifted inside the journal), the sequential per-backup
+sha256 loop (batch work, not request work), and the `BatchStartRecord`
+import (record shapes stop leaking into HTTP code).
+
+Consumers: the route; cancel.test.ts + journal.test.ts see only additive
+fields; composition.test.ts's history read-back pins the response shape
+unchanged. A missing/tampered backup verifies FALSE in the view (chip
+honesty), never crashes it.
+
+Ratchet (C7 reviewed hand edit, reason in the commit body): journal.ts
+399→407 code lines + filesOverLength 14→15 — the journal took ownership of
+the History query (the route shed ~25 lines). Splitting the module to duck
+under 400 would re-scatter the query this candidate unified.
+
+Test-repair disclosure: the appended historyView tests first carried
+single-escape Windows paths (a shell heredoc ate one escape level; `\v`
+became a vertical tab — tests passed only because corruption was symmetric)
+and two existence-only asserts. Repaired to escaped literals + value
+assertions BEFORE the commit; the ratchet's existenceAssertions rule caught
+the weak asserts independently.
+
+Proof: historyView tests red-first (missing method) then green; write suite
+138/138; typecheck 0; instruction 0; GATES_OK 8 steps.
