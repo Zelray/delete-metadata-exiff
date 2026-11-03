@@ -58,16 +58,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { pollPortfile, readPortfile } from './lib/portfile.mjs';
+import { pollPortfile } from './lib/portfile.mjs';
 import {
   assertNoNewProcesses,
-  closeMainWindow,
   listProcesses,
-  listeningSockets,
   processPids,
   processTree,
   waitForQuietMachine,
 } from './lib/processes.mjs';
+import {
+  bootAndProve,
+  engineNodeOf,
+  fetchJson,
+  launchTarget,
+  pidAlive,
+  pollFor,
+  proveLive,
+  proveStopped,
+} from './lib/bootAndProve.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STAGE = path.join(APP_ROOT, 'dist-desktop', 'stage');
@@ -128,6 +136,15 @@ function tailOf(text, count = 40) {
   if (!text || text.trim().length === 0) return '';
   return text.split(/\r?\n/).slice(-count).join('\n');
 }
+
+// Issue #19: every shell boot (runShell + the matrix cases) feeds ONE output
+// accumulator, so a failure always shows the app's own tail no matter which
+// case was running when it died.
+let shellOutput = '';
+const trackShellOutput = (text) => {
+  shellOutput += text;
+};
+const noteShellExit = (code, pid) => note(`MetaDesk.exe (pid ${pid}) exited with code ${code}`);
 
 let exitCode = 0;
 try {
@@ -289,160 +306,32 @@ async function runShell() {
   step('baselines', `${before.node.size} node.exe, ${before.exiftool.size} exiftool.exe before the run`);
 
   const dataDir = path.join(makeScratch(), 'data');
-  const portfilePath = path.join(dataDir, 'portfile.json');
   const env = { ...process.env, METADESK_DATA_DIR: dataDir };
 
-  const launch = () =>
-    spawn(SHELL_EXE, [], {
-      cwd: path.dirname(SHELL_EXE),
-      shell: false,
-      windowsHide: false, // the wrapped app is a GUI; its window is the point
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env,
-    });
-  let shellOutput = '';
-
-  shellChild = launch();
-  const capture = (child, which) => {
-    child.stdout.on('data', (chunk) => {
-      shellOutput += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      shellOutput += String(chunk);
-    });
-    child.on('exit', (code) => {
-      note(`${which} exited with code ${code}`);
-    });
-  };
-  capture(shellChild, 'shell');
-
-  // Issue #17: field rules live in scripts/lib/portfile.mjs.
-  const portfile = await pollPortfile(portfilePath, {
-    timeoutMs: 60_000,
-    abort: () => (shellChild.exitCode !== null ? `MetaDesk.exe exited early with code ${shellChild.exitCode}` : null),
-  }).catch((abortError) => {
-    throw new Error(`the wrapped app never wrote a portfile (${abortError.message})`);
+  // Issue #19: the boot -> prove -> close narrative lives ONCE in
+  // scripts/lib/bootAndProve.mjs (spawn-tree, health, served page, the
+  // one-listener rule, WM_CLOSE, teardown, residue). This gate's delta:
+  // `singleInstance` (the second-launch probe) and the machine-wide orphan
+  // gate after the close. onChild registers every spawned child — first AND
+  // second launch — with the failure-path cleanup BEFORE anything can fail.
+  diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(shellOutput)}`;
+  await bootAndProve({
+    exe: SHELL_EXE,
+    cwd: path.dirname(SHELL_EXE),
+    env,
+    packageRoot,
+    dataDir,
+    label: 'the wrapped app',
+    singleInstance: true,
+    onChild: (child) => {
+      if (shellChild === null) shellChild = child;
+      else secondShellChild = child;
+    },
+    onStep: step,
+    onNote: note,
+    onOutput: trackShellOutput,
+    onExit: noteShellExit,
   });
-  if (portfile === null) throw new Error('the wrapped app never wrote a portfile');
-  step('boot', `${portfile.url} (server pid ${portfile.pid})`);
-  diagOf = () => `--- shell stderr (tail) ---\n${tailOf(shellOutput)}`;
-
-  // ---- the spawn tree: MetaDesk.exe -> our node.exe -> (exiftool.exe) ---------
-  const tree = await processTree(shellChild.pid);
-  const engineNode = tree.find(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.cmdline &&
-      proc.cmdline.toLowerCase().includes('server.mjs') &&
-      proc.cmdline.toLowerCase().includes(path.dirname(SHELL_EXE).toLowerCase()),
-  );
-  if (!engineNode) {
-    throw new Error(
-      `MetaDesk.exe has no direct node.exe child running our staged server.mjs. Tree: ${JSON.stringify(tree)}`,
-    );
-  }
-  if (engineNode.ppid !== shellChild.pid) {
-    throw new Error(
-      `The engine node.exe (pid ${engineNode.pid}) is not a DIRECT child of MetaDesk.exe (parent ${engineNode.ppid})`,
-    );
-  }
-  if (!portfile.engine || path.relative(packageRoot, portfile.engine).startsWith('..')) {
-    throw new Error(
-      `The wrapped app is not using the engine shipped next to its exe: ${portfile.engine} (expected under ${packageRoot})`,
-    );
-  }
-  step(
-    'spawn-tree',
-    `MetaDesk.exe ${shellChild.pid} -> node.exe ${engineNode.pid} (staged server.mjs) -> exiftool 13.59`,
-  );
-
-  // ---- health + injected page --------------------------------------------------
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
-  }
-  if (!health.body.version.startsWith('13.')) {
-    throw new Error(`The engine handshake is not a 13.x exiftool: ${health.body.version}`);
-  }
-  step('health', `engine ${health.body.version}, mode ${health.body.mode ?? 'read-only'}`);
-
-  const page = await fetch(portfile.url);
-  const html = await page.text();
-  if (page.status !== 200) throw new Error(`GET / -> ${page.status}`);
-  if (!html.includes('window.__METADESK__=')) throw new Error('The served page lacks the __METADESK__ boot script');
-  if (html.includes('UI bundle is not built yet')) {
-    throw new Error('The wrapped app served the status page, not the app bundle');
-  }
-  step('served-ui', `GET / 200 with boot script + token (${html.length} bytes)`);
-
-  // ---- exactly ONE listener, on loopback, owned by node.exe in OUR tree --------
-  const listeners = await listeningSockets();
-  const treePids = new Set([shellChild.pid, ...tree.map((proc) => proc.pid)]);
-  const ours = listeners.filter((socket) => treePids.has(socket.pid));
-  if (ours.length !== 1) {
-    throw new Error(
-      `Expected exactly 1 LISTEN socket in the MetaDesk tree, found ${ours.length}: ${JSON.stringify(listeners)}`,
-    );
-  }
-  const only = ours[0];
-  if (only.address !== '127.0.0.1') throw new Error(`The listener is not loopback-only: ${JSON.stringify(only)}`);
-  const owner = tree.find((proc) => proc.pid === only.pid);
-  if (!owner || owner.name.toLowerCase() !== 'node.exe') {
-    throw new Error(`The listener is not owned by node.exe: ${JSON.stringify({ socket: only, tree })}`);
-  }
-  step('one-listener', `127.0.0.1:${only.port} LISTEN, owned by node.exe ${only.pid}`);
-
-  // ---- second launch: focus, not a second server --------------------------------
-  const pidBefore = portfile.pid;
-  const secondStartedAt = Date.now();
-  secondShellChild = launch();
-  const secondExit = await pollFor(
-    () => (secondShellChild.exitCode !== null ? secondShellChild.exitCode : null),
-    40_000,
-    'the second launch did not exit within 40 s (single-instance is not working)',
-  );
-  if (secondExit !== 0) throw new Error(`The second launch exited ${secondExit} (expected 0)`);
-  const secondElapsedMs = Date.now() - secondStartedAt;
-  const after = await processTree(shellChild.pid);
-  const nodeCount = after.filter((proc) => proc.name.toLowerCase() === 'node.exe').length;
-  if (nodeCount !== 1) throw new Error(`After the second launch the tree has ${nodeCount} node.exe processes`);
-  const portfileAfter = readPortfile(portfilePath);
-  if (portfileAfter === null || portfileAfter.pid !== pidBefore) {
-    throw new Error(`The second launch disturbed the running server: ${JSON.stringify(portfileAfter)}`);
-  }
-  const healthAfter = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (healthAfter.status !== 200 || healthAfter.body.ok !== true) {
-    throw new Error('The running server stopped answering after the second launch');
-  }
-  step('single-instance', `second launch exited 0 after ${(secondElapsedMs / 1000).toFixed(1)} s, server pid unchanged`);
-
-  // ---- close the window: the whole tree must go ---------------------------------
-  // Issue #18: the kit closes OUR pid's window first (a name-only close could
-  // hit a second instance's window in the single-instance cases).
-  const closed = await closeMainWindow(shellChild.pid, { onNote: note });
-  if (!closed) throw new Error('Could not find the MetaDesk main window to close (WM_CLOSE)');
-
-  const exited = await pollFor(
-    () => (shellChild.exitCode !== null ? shellChild.exitCode : null),
-    40_000,
-    'MetaDesk.exe did not exit within 40 s of WM_CLOSE',
-  );
-  step('close', `WM_CLOSE -> MetaDesk.exe exited ${exited}`);
-
-  await pollFor(
-    () => (!pidAlive(pidBefore) && !pidAlive(engineNode.pid) ? true : null),
-    20_000,
-    'the engine processes survived the window close',
-  );
-  step('teardown', 'server pid and node pid are gone');
-
-  const residue = [portfilePath, path.join(dataDir, 'instance.lock'), path.join(dataDir, 'stop.request')].filter(
-    existsSync,
-  );
-  if (residue.length > 0) {
-    throw new Error(`Residue left in the data dir: ${residue.map((p) => path.basename(p)).join(', ')}`);
-  }
-  step('residue', 'portfile / instance.lock / stop.request all swept');
 
   await assertNoNewProcesses(before, { onNote: note });
   step('no-orphans', 'node + exiftool back to the machine-wide baseline');
@@ -481,118 +370,42 @@ async function runMatrix() {
   await assertNoNewProcesses(before, { onNote: note });
 }
 
-/** Launch the wrapped app against one data dir. */
-function launchShell(packageRoot, dataDir) {
-  const child = spawn(SHELL_EXE, [], {
-    cwd: packageRoot,
-    shell: false,
-    windowsHide: false, // the wrapped app is a GUI; its window is the point
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, METADESK_DATA_DIR: dataDir },
-  });
-  let output = '';
-  child.stdout.on('data', (chunk) => {
-    output += String(chunk);
-  });
-  child.stderr.on('data', (chunk) => {
-    output += String(chunk);
-  });
-  child.on('exit', (code) => {
-    note(`MetaDesk.exe (pid ${child.pid}) exited with code ${code}`);
-  });
-  diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(output)}`;
-  return child;
-}
-
 /**
- * Launch + wait for the portfile + assert a healthy engine. `portfileOk` lets a
- * case ignore portfiles it knows are not the boot's own (case 3 seeds a stale
- * one first) — without it this helper would happily "boot" onto the seed.
+ * One bootAndProve call per matrix case, with the case name prefixed onto the
+ * routine's canonical step names (boot / spawn-tree / health / served-ui /
+ * one-listener / close / teardown / residue). Every case's launch looks the
+ * same except its data dir — the deltas live in what each case DOES around
+ * the shared proof.
  */
-async function bootShell(packageRoot, dataDir, portfileOk = null) {
-  const portfilePath = path.join(dataDir, 'portfile.json');
-  const child = launchShell(packageRoot, dataDir);
-  shellChild = child;
-  // Issue #17: the reader's field rules live in scripts/lib/portfile.mjs;
-  // `portfileOk` stays this gate's own admission policy (case 3 seeds a
-  // stale portfile the boot must NOT accept).
-  const portfile = await pollPortfile(portfilePath, {
-    timeoutMs: 60_000,
-    accept: portfileOk,
-    abort: () => (child.exitCode !== null ? `MetaDesk.exe exited early with code ${child.exitCode}` : null),
-  }).catch((abortError) => {
-    throw new Error(`the wrapped app never wrote a portfile (${abortError.message})`);
+function shellBootFor(packageRoot, dataDir, { onChild, onStep, accept = null, stop = 'window' }) {
+  return bootAndProve({
+    exe: SHELL_EXE,
+    cwd: packageRoot,
+    env: { ...process.env, METADESK_DATA_DIR: dataDir },
+    packageRoot,
+    dataDir,
+    label: 'the wrapped app',
+    accept,
+    stop,
+    onChild,
+    onStep,
+    onNote: note,
+    onOutput: trackShellOutput,
+    onExit: noteShellExit,
   });
-  if (portfile === null) throw new Error('the wrapped app never wrote a portfile');
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
-  }
-  return { child, portfile, portfilePath };
-}
-
-/** Our staged server.mjs running as a node.exe inside `tree`. */
-function engineNodeOf(packageRoot, tree) {
-  return tree.find(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.cmdline &&
-      proc.cmdline.toLowerCase().includes('server.mjs') &&
-      proc.cmdline.toLowerCase().includes(packageRoot.toLowerCase()),
-  );
-}
-
-/** The graceful close of one healthy instance: exit 0, pids gone, dir swept. */
-async function closeAndAssertSwept({ child, portfile, dataDir, enginePid, label }) {
-  if (typeof dataDir !== 'string' || typeof enginePid !== 'number') {
-    throw new Error(
-      `internal: closeAndAssertSwept needs dataDir + enginePid (${JSON.stringify({ label, dataDir, enginePid })})`,
-    );
-  }
-  const startedAt = Date.now();
-  const closed = await closeMainWindow(child.pid, { onNote: note });
-  if (!closed) throw new Error('Could not find the MetaDesk main window to close (WM_CLOSE)');
-  const exitCode = await pollFor(
-    () => (child.exitCode !== null ? child.exitCode : null),
-    40_000,
-    'MetaDesk.exe did not exit within 40 s of WM_CLOSE',
-  );
-  if (exitCode !== 0) throw new Error(`MetaDesk.exe exited ${exitCode} on WM_CLOSE (expected 0)`);
-  const elapsedMs = Date.now() - startedAt;
-  await pollFor(
-    () => (!pidAlive(portfile.pid) && !pidAlive(enginePid) ? true : null),
-    20_000,
-    'the engine processes survived the window close',
-  );
-  const residue = ['portfile.json', 'instance.lock', 'stop.request']
-    .map((name) => path.join(dataDir, name))
-    .filter(existsSync);
-  if (residue.length > 0) {
-    throw new Error(`Residue left in the data dir: ${residue.map((p) => path.basename(p)).join(', ')}`);
-  }
-  step(
-    label,
-    `WM_CLOSE -> exit 0 in ${(elapsedMs / 1000).toFixed(2)} s, engine pid ${portfile.pid} gone, data dir swept`,
-  );
 }
 
 /** Case 1 — the baseline: X-close runs the graceful ladder (steps 3-5). */
 async function matrixCase1CloseGraceful(packageRoot) {
   const dataDir = path.join(makeScratch(), 'data');
-  const boot = await bootShell(packageRoot, dataDir);
-  const tree = await processTree(boot.child.pid);
-  const engineNode = engineNodeOf(packageRoot, tree);
-  if (!engineNode || engineNode.ppid !== boot.child.pid) {
-    throw new Error(
-      `MetaDesk.exe has no direct node.exe engine child. Tree: ${JSON.stringify(tree)}`,
-    );
-  }
-  step('case1-boot', `healthy at ${boot.portfile.url} (shell ${boot.child.pid}, engine ${engineNode.pid})`);
-  await closeAndAssertSwept({
-    ...boot,
-    dataDir,
-    enginePid: engineNode.pid,
-    label: 'case1-close-graceful',
+  const caseStep = (name, detail) => step(`case1-${name}`, detail);
+  // The full proof IS the case: healthy boot (spawn-tree / health / served-ui
+  // / one-listener) then WM_CLOSE -> exit 0, engine pids gone, dir swept.
+  await shellBootFor(packageRoot, dataDir, {
+    onChild: (child) => {
+      shellChild = child;
+    },
+    onStep: caseStep,
   });
 }
 
@@ -603,16 +416,24 @@ async function matrixCase1CloseGraceful(packageRoot) {
  */
 async function matrixCase2HardKillBackstop(packageRoot) {
   const dataDir = path.join(makeScratch(), 'data');
-  const boot = await bootShell(packageRoot, dataDir);
-  const tree = await processTree(boot.child.pid);
-  const engineNode = engineNodeOf(packageRoot, tree);
-  if (!engineNode) throw new Error('no engine node.exe child to exercise the Job Object backstop');
-  const exifPids = tree
+  const caseStep = (name, detail) => step(`case2-${name}`, detail);
+  // Issue #19: the routine proves the boot live, then hands back — `stop:
+  // null` because this case's SUBJECT is a violent death; the routine itself
+  // never kills, and the case performs its own taskkill below.
+  const boot = await shellBootFor(packageRoot, dataDir, {
+    stop: null,
+    onChild: (child) => {
+      shellChild = child;
+    },
+    onStep: caseStep,
+  });
+  const engineNode = boot.engineNode;
+  const exifPids = boot.tree
     .filter((proc) => proc.name.toLowerCase() === 'exiftool.exe')
     .map((proc) => proc.pid);
   step(
-    'case2-boot',
-    `healthy; shell ${boot.child.pid}, engine ${engineNode.pid}${
+    'case2-targets',
+    `shell ${boot.child.pid}, engine ${engineNode.pid}${
       exifPids.length > 0 ? `, exiftool ${exifPids.join(', ')}` : ''
     }`,
   );
@@ -700,19 +521,21 @@ async function matrixCase3StalePortfileSweep(packageRoot) {
   );
   step('case3-seed', `stale portfile seeded with dead pid ${deadPid}`);
 
-  const boot = await bootShell(
-    packageRoot,
-    dataDir,
-    // The seed names port 1 and a dead pid; only the boot's OWN portfile counts.
-    (candidate) => candidate.pid !== deadPid && candidate.port !== 1,
-  );
-  if (boot.portfile.pid === deadPid) {
-    throw new Error('the app adopted the stale portfile instead of sweeping it');
-  }
-  step('case3-boot', `booted clean at ${boot.portfile.url} (fresh server pid ${boot.portfile.pid})`);
+  // The seed names port 1 and a dead pid; only the boot's OWN portfile counts
+  // (`accept` is the routine's admission filter for exactly this).
+  const caseStep = (name, detail) => step(`case3-${name}`, detail);
+  await shellBootFor(packageRoot, dataDir, {
+    accept: (candidate) => candidate.pid !== deadPid && candidate.port !== 1,
+    onChild: (child) => {
+      shellChild = child;
+    },
+    onStep: caseStep,
+  });
 
   // The sweep line proves WHICH branch handled it (dead pid -> unlink, never a
   // kill) — the safety property behind the never-kill-a-foreign-process rule.
+  // Read AFTER the close: the sweep happened at launch (step 0), the graceful
+  // close only appends, so the line's presence does not depend on when we look.
   const log = readFileSync(path.join(dataDir, 'metadesk-shell.log'), 'utf8');
   if (!log.includes(`stale portfile (pid ${deadPid} is dead)`)) {
     throw new Error(
@@ -720,13 +543,6 @@ async function matrixCase3StalePortfileSweep(packageRoot) {
     );
   }
   step('case3-sweep', `launch sweep removed the stale portfile (dead pid ${deadPid}) before spawning`);
-
-  await closeAndAssertSwept({
-    ...boot,
-    dataDir,
-    enginePid: boot.portfile.pid,
-    label: 'case3-close',
-  });
 }
 
 /** A short-lived process whose pid is guaranteed gone when this resolves. */
@@ -748,9 +564,18 @@ async function spawnAndExitPid() {
  */
 async function matrixCase4SlowBootSingleInstance(packageRoot) {
   const dataDir = path.join(makeScratch(), 'data');
-  const portfilePath = path.join(dataDir, 'portfile.json');
+  const caseStep = (name, detail) => step(`case4-${name}`, detail);
+  const launchInstance = () =>
+    launchTarget({
+      exe: SHELL_EXE,
+      cwd: packageRoot,
+      env: { ...process.env, METADESK_DATA_DIR: dataDir },
+      onOutput: trackShellOutput,
+      onExit: noteShellExit,
+    });
 
-  const first = launchShell(packageRoot, dataDir);
+  const first = launchInstance();
+  shellChild = first; // the failure-path cleanup must always know the live child
   // Mid-boot means: past the single-instance registration (the FIRST plugin)
   // and past the engine spawn, but before the window is up. Waiting for the
   // engine node child pins the moment deterministically.
@@ -761,7 +586,7 @@ async function matrixCase4SlowBootSingleInstance(packageRoot) {
   step('case4-midboot', `instance 1 (pid ${first.pid}) is mid-boot: engine spawned, window not up yet`);
 
   const secondStartedAt = Date.now();
-  secondShellChild = launchShell(packageRoot, dataDir);
+  secondShellChild = launchInstance();
   const secondExit = await pollFor(
     () => (secondShellChild.exitCode !== null ? secondShellChild.exitCode : null),
     40_000,
@@ -788,27 +613,24 @@ async function matrixCase4SlowBootSingleInstance(packageRoot) {
     `second launch exited 0 after ${(secondElapsedMs / 1000).toFixed(1)} s; exactly 1 staged server machine-wide`,
   );
 
-  // Instance 1 finishes its boot normally and owns the one portfile.
+  // Instance 1 finishes its boot normally and owns the one portfile — and the
+  // full LIVE proof runs now that the boot window has closed (issue #19: the
+  // phase exports let a bespoke choreography reuse the exact assertions).
   if (first.exitCode !== null) throw new Error('instance 1 did not survive the second launch');
-  const portfile = await pollPortfile(portfilePath, { timeoutMs: 30_000 });
-  if (portfile === null) throw new Error('instance 1 never wrote a portfile after the second launch');
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error('instance 1 stopped answering its health check after the second launch');
-  }
-  step('case4-health', `instance 1 healthy at ${portfile.url} (server pid ${portfile.pid})`);
-
-  const tree = await processTree(first.pid);
-  const engineNode = engineNodeOf(packageRoot, tree);
-  if (!engineNode || engineNode.ppid !== first.pid) {
-    throw new Error(`instance 1 has no direct node.exe engine child. Tree: ${JSON.stringify(tree)}`);
-  }
-  await closeAndAssertSwept({
+  const live = await proveLive({
     child: first,
-    portfile,
+    packageRoot,
     dataDir,
-    enginePid: engineNode.pid,
-    label: 'case4-close',
+    label: 'instance 1',
+    onStep: caseStep,
+  });
+  await proveStopped({
+    child: first,
+    portfile: live.portfile,
+    dataDir,
+    enginePid: live.engineNode.pid,
+    onStep: caseStep,
+    onNote: note,
   });
 }
 
@@ -921,46 +743,6 @@ async function runNode(args, cwd, label) {
 
 function execFileSyncSafe(file, args) {
   return execFileSync(file, args, { shell: false, windowsHide: true, encoding: 'utf8' });
-}
-
-async function pollFor(produce, timeoutMs, failure, extraFailure = null) {
-  const startedAt = Date.now();
-  let extraNote = '';
-  while (Date.now() - startedAt < timeoutMs) {
-    const extra = extraFailure === null ? null : extraFailure();
-    if (extra !== null && extra !== undefined) {
-      extraNote = extra;
-      break;
-    }
-    const value = await produce();
-    if (value !== null && value !== undefined && value !== false) return value;
-    await sleep(250);
-  }
-  throw new Error(`${failure}${extraNote === '' ? '' : ` (${extraNote})`}`);
-}
-
-async function fetchJson(url) {
-  try {
-    const response = await fetch(url);
-    let body = null;
-    try {
-      body = await response.json();
-    } catch {
-      body = { raw: (await response.text()).slice(0, 200) };
-    }
-    return { status: response.status, body };
-  } catch (error) {
-    return { status: 0, body: { error: String(error) } };
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error !== null && typeof error === 'object' && error.code === 'EPERM';
-  }
 }
 
 function makeScratch() {

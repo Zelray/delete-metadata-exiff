@@ -61,16 +61,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { pollPortfile } from './lib/portfile.mjs';
 import {
   assertNoNewProcesses,
-  closeMainWindow,
   processPids,
-  processTree,
   pwsq,
   runPowerShell,
   waitForQuietMachine,
 } from './lib/processes.mjs';
+import { bootAndProve } from './lib/bootAndProve.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(APP_ROOT, 'dist-desktop');
@@ -234,78 +232,29 @@ async function runCleanMachine() {
   }
   step('sanitation', 'under the sanitized env, where.exe finds no node / git / cargo / pwsh');
 
-  const portfilePath = path.join(dataDir, 'portfile.json');
-  const startedAt = Date.now();
-  appChild = spawn(path.join(packageRoot, 'MetaDesk.exe'), [], {
-    cwd: packageRoot,
-    shell: false,
-    windowsHide: false, // the packaged app is a GUI; its window is the point
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  });
+  // Issue #19: the boot -> prove -> close narrative lives in
+  // scripts/lib/bootAndProve.mjs; this drill's DELTA is the environment —
+  // the app child launches under the sanitized PATH above, and the proof
+  // must show nothing about the boot was rescued by a PATH-borne tool.
   let appOutput = '';
-  appChild.stdout.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
-  appChild.stderr.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
   diagOf = () =>
     `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}\n--- sanitized PATH ---\n${env.PATH}`;
-
-  // Issue #17: field rules live in scripts/lib/portfile.mjs.
-  const portfile = await pollPortfile(portfilePath, {
-    timeoutMs: 60_000,
-    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  }).catch((abortError) => {
-    throw new Error(`the app never wrote a portfile with the sanitized PATH (${abortError.message})`);
+  await bootAndProve({
+    exe: path.join(packageRoot, 'MetaDesk.exe'),
+    cwd: packageRoot,
+    env,
+    packageRoot,
+    dataDir,
+    label: 'the app (sanitized PATH)',
+    onChild: (child) => {
+      appChild = child; // the failure path and cleanup must always know the child
+    },
+    onStep: step,
+    onNote: note,
+    onOutput: (text) => {
+      appOutput += text;
+    },
   });
-  if (portfile === null) throw new Error('the app never wrote a portfile with the sanitized PATH');
-  const bootMs = Date.now() - startedAt;
-  step('boot', `${portfile.url} (server pid ${portfile.pid}) in ${(bootMs / 1000).toFixed(1)} s`);
-
-  // The engine must be the app's own child running the app's own bundle —
-  // nothing about this boot may have been rescued by a PATH-borne tool.
-  const tree = await processTree(appChild.pid);
-  const engineNode = tree.find(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.cmdline &&
-      proc.cmdline.toLowerCase().includes('server.mjs') &&
-      proc.cmdline.toLowerCase().includes(packageRoot.toLowerCase()),
-  );
-  if (!engineNode) {
-    throw new Error(`MetaDesk.exe has no node.exe child running the shipped server.mjs. Tree: ${JSON.stringify(tree)}`);
-  }
-  if (engineNode.ppid !== appChild.pid) {
-    throw new Error(`The engine node.exe (pid ${engineNode.pid}) is not a DIRECT child of MetaDesk.exe`);
-  }
-  if (!portfile.engine || path.relative(packageRoot, portfile.engine).startsWith('..')) {
-    throw new Error(`The app is not using the engine shipped in its own folder: ${portfile.engine}`);
-  }
-  step('spawn-tree', `MetaDesk.exe ${appChild.pid} -> node.exe ${engineNode.pid} (shipped server.mjs)`);
-
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
-  }
-  if (!health.body.version.startsWith('13.')) {
-    throw new Error(`The engine handshake is not a 13.x exiftool: ${health.body.version}`);
-  }
-  step('health', `engine ${health.body.version}, mode ${health.body.mode ?? 'read-only'}`);
-
-  const page = await fetch(portfile.url);
-  const html = await page.text();
-  if (page.status !== 200) throw new Error(`GET / -> ${page.status}`);
-  if (!html.includes('window.__METADESK__=')) {
-    throw new Error('The served page lacks the __METADESK__ boot script');
-  }
-  if (html.includes('UI bundle is not built yet')) {
-    throw new Error('The app served the "UI bundle missing" status page, not the app (FAILURE)');
-  }
-  step('served-ui', `GET / 200 with boot script + token (${html.length} bytes)`);
-
-  await closeAndAssertTeardown({ portfile, enginePid: engineNode.pid, dataDir });
 
   await assertNoNewProcesses(before, { onNote: note });
   step('no-orphans', 'node + exiftool back to the machine-wide baseline');
@@ -389,61 +338,31 @@ async function runUpdateRehearsal() {
   step('data-survived', `all ${seeded.length} data files byte-identical after the upgrade`);
 
   // ---- the upgraded folder boots the portable way -----------------------------
-  const portfilePath = path.join(dataDir, 'portfile.json');
+  // Issue #19: the shared boot-and-prove routine runs the upgraded folder
+  // through the full lifecycle proof. This mode's DELTA: the environment has
+  // NO METADESK_DATA_DIR, so the app must use its own data\ subfolder —
+  // exactly like a user's upgraded install — and after the close we re-hash
+  // the seeded user files below.
   const env = { ...process.env };
   delete env.METADESK_DATA_DIR; // no override: the app must use its own data\ subfolder
-  appChild = spawn(path.join(packageRoot, 'MetaDesk.exe'), [], {
-    cwd: packageRoot,
-    shell: false,
-    windowsHide: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  });
   let appOutput = '';
-  appChild.stdout.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
-  appChild.stderr.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
   diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}`;
-
-  const portfile = await pollPortfile(portfilePath, {
-    timeoutMs: 60_000,
-    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  }).catch((abortError) => {
-    throw new Error(`the upgraded app never wrote a portfile (${abortError.message})`);
+  await bootAndProve({
+    exe: path.join(packageRoot, 'MetaDesk.exe'),
+    cwd: packageRoot,
+    env,
+    packageRoot,
+    dataDir,
+    label: 'the upgraded app',
+    onChild: (child) => {
+      appChild = child; // the failure path and cleanup must always know the child
+    },
+    onStep: step,
+    onNote: note,
+    onOutput: (text) => {
+      appOutput += text;
+    },
   });
-  if (portfile === null) throw new Error('the upgraded app never wrote a portfile');
-  step('boot', `${portfile.url} (server pid ${portfile.pid}, data dir = the folder's own data\\)`);
-
-  if (!portfile.engine || path.relative(packageRoot, portfile.engine).startsWith('..')) {
-    throw new Error(`The upgraded app is not using the engine shipped in its own folder: ${portfile.engine}`);
-  }
-  const tree = await processTree(appChild.pid);
-  const engineNode = tree.find(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.cmdline &&
-      proc.cmdline.toLowerCase().includes('server.mjs') &&
-      proc.cmdline.toLowerCase().includes(packageRoot.toLowerCase()),
-  );
-  if (!engineNode) {
-    throw new Error(`The upgraded app has no node.exe child running the shipped server.mjs. Tree: ${JSON.stringify(tree)}`);
-  }
-
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
-  }
-  const page = await fetch(portfile.url);
-  const html = await page.text();
-  if (page.status !== 200 || !html.includes('window.__METADESK__=')) {
-    throw new Error(`The upgraded app did not serve the app page (GET / -> ${page.status})`);
-  }
-  step('health', `engine ${health.body.version}, served page carries the boot script (${html.length} bytes)`);
-
-  await closeAndAssertTeardown({ portfile, enginePid: engineNode.pid, dataDir });
 
   // The run itself must not have touched the user's files. engine-version.json
   // is the server's own cache and is expected to be refreshed at boot; the
@@ -459,39 +378,6 @@ async function runUpdateRehearsal() {
 
   await assertNoNewProcesses(before, { onNote: note });
   step('no-orphans', 'node + exiftool back to the machine-wide baseline');
-}
-
-// ---------------------------------------------------------------------------
-// shared: close the window, prove the tree is gone and the data dir is swept
-// ---------------------------------------------------------------------------
-
-async function closeAndAssertTeardown({ portfile, enginePid, dataDir }) {
-  const closed = await closeMainWindow(appChild.pid, { onNote: note });
-  if (!closed) throw new Error('Could not find the MetaDesk main window to close (WM_CLOSE)');
-  const startedAt = Date.now();
-  const exitCodeSeen = await pollFor(
-    () => (appChild.exitCode !== null ? appChild.exitCode : null),
-    40_000,
-    'MetaDesk.exe did not exit within 40 s of WM_CLOSE',
-  );
-  if (exitCodeSeen !== 0) throw new Error(`MetaDesk.exe exited ${exitCodeSeen} on WM_CLOSE (expected 0)`);
-  step('close', `WM_CLOSE -> exit 0 in ${((Date.now() - startedAt) / 1000).toFixed(2)} s`);
-
-  await pollFor(
-    () => (!pidAlive(portfile.pid) && !pidAlive(enginePid) ? true : null),
-    20_000,
-    'the engine processes survived the window close',
-  );
-  step('teardown', `server pid ${portfile.pid} and engine pid ${enginePid} are gone`);
-
-  const residue = ['portfile.json', 'instance.lock', 'stop.request']
-    .map((name) => path.join(dataDir, name))
-    .filter(existsSync);
-  if (residue.length > 0) {
-    throw new Error(`Residue left in the data dir: ${residue.map((p) => path.basename(p)).join(', ')}`);
-  }
-  step('residue', 'portfile / instance.lock / stop.request all swept');
-  appChild = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,51 +462,11 @@ function runCaptureExit(file, args, options = {}) {
   });
 }
 
-async function pollFor(produce, timeoutMs, failure, extraFailure = null) {
-  const startedAt = Date.now();
-  let extraNote = '';
-  while (Date.now() - startedAt < timeoutMs) {
-    const extra = extraFailure === null ? null : extraFailure();
-    if (extra !== null && extra !== undefined) {
-      extraNote = extra;
-      break;
-    }
-    const value = await produce();
-    if (value !== null && value !== undefined && value !== false) return value;
-    await sleep(250);
-  }
-  throw new Error(`${failure}${extraNote === '' ? '' : ` (${extraNote})`}`);
-}
-
-async function fetchJson(url) {
-  try {
-    const response = await fetch(url);
-    let body = null;
-    try {
-      body = await response.json();
-    } catch {
-      body = { raw: (await response.text()).slice(0, 200) };
-    }
-    return { status: response.status, body };
-  } catch (error) {
-    return { status: 0, body: { error: String(error) } };
-  }
-}
-
 function readJson(filePath) {
   try {
     return JSON.parse(readFileSync(filePath, 'utf8'));
   } catch {
     return null;
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error !== null && typeof error === 'object' && error.code === 'EPERM';
   }
 }
 
@@ -632,8 +478,4 @@ function makeScratch() {
 
 function sha256File(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

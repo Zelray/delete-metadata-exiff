@@ -1,7 +1,7 @@
 {
   "version": 1,
   "counts": {
-    "filesOverLength": 16,
+    "filesOverLength": 14,
     "rule:lint:@typescript-eslint/ban-ts-comment": 0,
     "rule:lint:@typescript-eslint/no-array-constructor": 0,
     "rule:lint:@typescript-eslint/no-duplicate-enum-values": 0,
@@ -122,7 +122,7 @@
     "rule:lint:valid-typeof": 0,
     "rule:process-shell": 0,
     "rule:process-shell-unspecified": 3,
-    "rule:process-argv": 14,
+    "rule:process-argv": 15,
     "rule:process-command": 0,
     "rule:ui-transport": 0,
     "rule:ui-write-bypass": 0,
@@ -240,7 +240,8 @@
     "file:[\"ui/src/write/write.surfaces.test.tsx\",\"existenceAssertions\"]": 5,
     "file:[\"ui/src/write/writeRun.session.test.tsx\",\"existenceAssertions\"]": 2,
     "file:[\"scripts/lib/processes.mjs\",\"lint:no-control-regex\"]": 1,
-    "file:[\"scripts/lib/processes.mjs\",\"process-argv\"]": 1
+    "file:[\"scripts/lib/processes.mjs\",\"process-argv\"]": 1,
+    "file:[\"scripts/lib/bootAndProve.mjs\",\"process-argv\"]": 1
   },
   "findings": {
     "[\"scripts/run-clean-machine.mjs\",\"lint:no-control-regex\",\"6f5f872ecba00f7ff9859bdc61ba33d4c549d5be97791a7000c764df273cb537\"]": 1,
@@ -1333,16 +1334,15 @@
     "[\"ui/src/write/writeRun.session.test.tsx\",\"existenceAssertions\",\"e4f734b89c9dc137707900d7800d4384649e57aa02462ef0d61da2868a6ca3b7\"]": 1,
     "[\"ui/src/write/writeRun.session.test.tsx\",\"existenceAssertions\",\"ac4bd3f68f5cdff0010ee3136ea020c4b668a5025fa99554f59e6f344a945f96\"]": 1,
     "[\"scripts/lib/processes.mjs\",\"process-argv\",\"5d009e5e3b7bb8618d149ebe4297bfbbd24faee04e9287908289afb585d2716e\"]": 1,
-    "[\"scripts/lib/processes.mjs\",\"lint:no-control-regex\",\"6f5f872ecba00f7ff9859bdc61ba33d4c549d5be97791a7000c764df273cb537\"]": 1
+    "[\"scripts/lib/processes.mjs\",\"lint:no-control-regex\",\"6f5f872ecba00f7ff9859bdc61ba33d4c549d5be97791a7000c764df273cb537\"]": 1,
+    "[\"scripts/lib/bootAndProve.mjs\",\"process-argv\",\"5ee61b8ce35adea8189c6ea3262b91ddb9f11abc14827ed1b4debdbdefce2abd\"]": 1
   },
   "lengths": {
     "bin/metadesk.mjs": 469,
     "scripts/build-portable.mjs": 429,
-    "scripts/run-clean-machine.mjs": 651,
     "scripts/verify-desktop.mjs": 925,
     "scripts/verify-e2e.mjs": 850,
     "scripts/verify-lifecycle-contract.mjs": 521,
-    "scripts/verify-package.mjs": 653,
     "scripts/verify-server.mjs": 521,
     "server/src/routes/writes.ts": 461,
     "server/src/services/recovery.ts": 406,

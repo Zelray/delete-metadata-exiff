@@ -1046,3 +1046,64 @@ package verification passed / desktop lifecycle matrix verification passed
 / clean-machine drill passed. Note for the next runner: a leftover running
 MetaDesk.exe from manual drills fails these gates by design (single-instance
 reflex, "exited early with code 0") — close it first.
+
+### 10.5 C6 — one boot-and-prove routine (issue #19, local main)
+
+New `scripts/lib/bootAndProve.mjs` (+ `quality/bootAndProve.test.mjs`, 8/8 in
+the gates framework lane) owns the "boot the shipped thing and prove the
+lifecycle contract" narrative that was re-authored ~120 lines at a time in
+four places. The narrative is three phases, exported separately so the matrix
+cases can choreograph:
+
+- `launchTarget({exe, args, cwd, env, onOutput, onExit})` — the argv-array GUI
+  spawn (shell:false, windowsHide:false). Calls `onChild` consumers FIRST —
+  gates register the child with their failure-path cleanup before anything
+  can fail.
+- `proveLive({child, packageRoot, dataDir, label, expectedVersion?, accept?,
+  oneListener=true, onStep})` → `{child, portfile, portfilePath, tree,
+  engineNode}` — portfile (C4 reader; abort on child exit; `accept` = case 3's
+  stale-seed admission) → spawn-tree (shipped server.mjs, DIRECT child,
+  engine inside packageRoot) → health 13.x → served page (boot script + token,
+  never the "UI bundle missing" status page; `expectedVersion` for the
+  package gate's delta) → exactly one loopback LISTEN socket owned by
+  node.exe in the tree.
+- `proveStopped({child, portfile, dataDir, enginePid, onStep, onNote})` —
+  WM_CLOSE via the C5 kit (pid-first), exit 0 in 40 s, engine pids gone in
+  20 s, residue triple swept. THE KIT HAS NO KILL PATH — pinned by a source
+  scan test (comment-stripped; the only kill-shaped call allowed is pidAlive's
+  signal-0 probe). taskkill lives only in matrix case 2, where the violent
+  death is the thing under test.
+- `bootAndProve(...)` composes all three + optional `singleInstance` (the
+  second-launch probe: exit 0, tree keeps one node.exe, portfile pid
+  unchanged, health answers) and `stop: null` (boot-only, for case 2).
+  Also exported for the gates' own deltas: `engineNodeOf`, `pollFor`,
+  `fetchJson`, `pidAlive`, `servedVersionOf`, `assertNoResidue`.
+
+Consumers: verify-package (delta: extract/manifest/layout re-assertion +
+expectedVersion), run-clean-machine clean (delta: sanitized env + where
+probes) and update (delta: no data-dir override + data-survival hashes),
+verify-desktop runShell (delta: singleInstance) and matrix cases 1-4 (deltas:
+their own choreography; case 4 uses the phase exports directly). TRUTHS THAT
+SPREAD: token-on-page + exit-0-on-close now also asserted by run-clean (both
+modes) and the matrix; exactly-one-listener by run-clean; the full page
+checks by matrix cases 1/3/4. Deliberately untouched: verify-desktop runBundle
+(node-direct boot, stdin stop — different target shape) and verify-launch /
+verify-server / verify-e2e (not in the review's four narratives).
+
+Chatter changes (harmless, disclosed): matrix closes now emit the canonical
+three steps (caseN-close / -teardown / -residue) instead of one combined
+line; case 2's target list is `case2-targets` (the routine emits case2-boot);
+case 3's sweep-log check runs AFTER the close (the sweep happens at launch,
+so the line's presence is order-independent); error text interpolates the
+gate's `label`.
+
+Ratchet (C7 reviewed hand edit, reason in the commit body): +1 process-argv
+identity (launchTarget — the five inline GUI spawns moved into it; the
+deleted ones were never ratcheted), filesOverLength 16->14 — verify-package
+and run-clean-machine are UNDER the 400-line cap now. Ratchet caught one real
+defect pre-commit: proveLive's unused onNote param — removed.
+
+Proof: quality/bootAndProve.test.mjs 8/8; GATES_OK (8 steps); then ALL FOUR
+narratives green live, serially: package verification passed / desktop
+lifecycle matrix verification passed / desktop shell verification passed /
+clean-machine drill passed / update rehearsal passed.

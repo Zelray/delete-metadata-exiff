@@ -44,18 +44,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { pollPortfile } from './lib/portfile.mjs';
 import {
   assertNoNewProcesses,
-  closeMainWindow,
-  listeningSockets,
   processPids,
-  processTree,
   pwsq,
   runCapture,
   runPowerShell,
   waitForQuietMachine,
 } from './lib/processes.mjs';
+import { bootAndProve } from './lib/bootAndProve.mjs';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = path.join(APP_ROOT, 'dist-desktop');
@@ -211,8 +208,34 @@ async function verifyPackage() {
   }
   step('selfcheck', 'node\\node.exe scripts\\selfcheck.mjs passed from the extracted folder');
 
-  // ---- 9. boot the extracted app ------------------------------------------------
-  await bootAndTeardown(packageRoot, before, manifest.version);
+  // ---- 9. boot the extracted app and prove the lifecycle contract ---------------
+  // Issue #19: boot -> portfile -> spawn-tree -> health -> served page ->
+  // one-listener -> WM_CLOSE -> teardown -> residue lives ONCE in
+  // scripts/lib/bootAndProve.mjs. This gate contributes its delta (the
+  // served page must announce the SHIPPED version) and keeps the machine-wide
+  // orphan gate, which owns the before-baseline taken above.
+  const dataDir = path.join(makeScratch(), 'data');
+  let appOutput = '';
+  diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}`;
+  await bootAndProve({
+    exe: path.join(packageRoot, 'MetaDesk.exe'),
+    cwd: packageRoot,
+    env: { ...process.env, METADESK_DATA_DIR: dataDir },
+    packageRoot,
+    dataDir,
+    label: 'the extracted app',
+    expectedVersion: manifest.version,
+    onChild: (child) => {
+      appChild = child; // the failure path and cleanup must always know the child
+    },
+    onStep: step,
+    onNote: note,
+    onOutput: (text) => {
+      appOutput += text;
+    },
+  });
+  await assertNoNewProcesses(before, { onNote: note });
+  step('no-orphans', 'node + exiftool back to the machine-wide baseline');
 }
 
 /** Locate zip + provenance; assert the zip hash matches the provenance record. */
@@ -379,133 +402,6 @@ function peMachine(exePath) {
   return buf.readUInt16LE(peOffset + 4);
 }
 
-/** Boot the extracted exe, prove it serves the real UI, then close it down. */
-async function bootAndTeardown(packageRoot, before, expectedVersion) {
-  const dataDir = path.join(makeScratch(), 'data');
-  const portfilePath = path.join(dataDir, 'portfile.json');
-  const shellExe = path.join(packageRoot, 'MetaDesk.exe');
-  const env = { ...process.env, METADESK_DATA_DIR: dataDir };
-
-  appChild = spawn(shellExe, [], {
-    cwd: packageRoot,
-    shell: false,
-    windowsHide: false, // the packaged app is a GUI; its window is the point
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  });
-  let appOutput = '';
-  appChild.stdout.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
-  appChild.stderr.on('data', (chunk) => {
-    appOutput += String(chunk);
-  });
-  diagOf = () => `--- MetaDesk.exe output (tail) ---\n${tailOf(appOutput)}`;
-
-  // Issue #17: field rules live in scripts/lib/portfile.mjs.
-  const portfile = await pollPortfile(portfilePath, {
-    timeoutMs: 60_000,
-    abort: () => (appChild.exitCode !== null ? `MetaDesk.exe exited early with code ${appChild.exitCode}` : null),
-  }).catch((abortError) => {
-    throw new Error(`the extracted app never wrote a portfile (${abortError.message})`);
-  });
-  if (portfile === null) throw new Error('the extracted app never wrote a portfile');
-  step('boot', `${portfile.url} (server pid ${portfile.pid})`);
-
-  // ---- the spawn tree: MetaDesk.exe -> our node.exe -> (exiftool.exe) ----------
-  const tree = await processTree(appChild.pid);
-  const engineNode = tree.find(
-    (proc) =>
-      proc.name.toLowerCase() === 'node.exe' &&
-      proc.cmdline &&
-      proc.cmdline.toLowerCase().includes('server.mjs') &&
-      proc.cmdline.toLowerCase().includes(packageRoot.toLowerCase()),
-  );
-  if (!engineNode) {
-    throw new Error(`MetaDesk.exe has no node.exe child running the shipped server.mjs. Tree: ${JSON.stringify(tree)}`);
-  }
-  if (engineNode.ppid !== appChild.pid) {
-    throw new Error(`The engine node.exe (pid ${engineNode.pid}) is not a DIRECT child of MetaDesk.exe`);
-  }
-  if (!portfile.engine || path.relative(packageRoot, portfile.engine).startsWith('..')) {
-    throw new Error(`The app is not using the engine shipped in its own folder: ${portfile.engine}`);
-  }
-  step('spawn-tree', `MetaDesk.exe ${appChild.pid} -> node.exe ${engineNode.pid} (shipped server.mjs)`);
-
-  const health = await fetchJson(`${portfile.url.replace(/\/$/, '')}/api/health`);
-  if (health.status !== 200 || health.body.ok !== true) {
-    throw new Error(`GET /api/health -> ${health.status} ${JSON.stringify(health.body).slice(0, 300)}`);
-  }
-  if (!health.body.version.startsWith('13.')) {
-    throw new Error(`The engine handshake is not a 13.x exiftool: ${health.body.version}`);
-  }
-  step('health', `engine ${health.body.version}, mode ${health.body.mode ?? 'read-only'}`);
-
-  const page = await fetch(portfile.url);
-  const html = await page.text();
-  if (page.status !== 200) throw new Error(`GET / -> ${page.status}`);
-  if (!html.includes('window.__METADESK__=')) {
-    throw new Error('The served page lacks the __METADESK__ boot script');
-  }
-  if (html.includes('UI bundle is not built yet')) {
-    throw new Error('The extracted app served the "UI bundle missing" status page, not the app (FAILURE)');
-  }
-  if (!html.includes(portfile.token)) {
-    throw new Error('The served page does not carry the per-launch token');
-  }
-  // The version the UI is told about must be the shipped package.json version
-  // (window.__METADESK__ = {"token":"…","version":"1.0.0","readOnlyDefault":true}).
-  const servedVersion = html.match(/window\.__METADESK__=\{"token":"[^"]*","version":"([^"]+)"/)?.[1];
-  if (servedVersion !== expectedVersion) {
-    throw new Error(`The served page announces version ${JSON.stringify(servedVersion)}, expected ${expectedVersion}`);
-  }
-  step('served-ui', `GET / 200 with boot script + token + version ${servedVersion} (${html.length} bytes)`);
-
-  // ---- exactly ONE listener, on loopback, owned by node.exe in OUR tree --------
-  const listeners = await listeningSockets();
-  const treePids = new Set([appChild.pid, ...tree.map((proc) => proc.pid)]);
-  const ours = listeners.filter((socket) => treePids.has(socket.pid));
-  if (ours.length !== 1) {
-    throw new Error(`Expected exactly 1 LISTEN socket in the packaged app's tree, found ${ours.length}: ${JSON.stringify(listeners)}`);
-  }
-  const only = ours[0];
-  if (only.address !== '127.0.0.1') throw new Error(`The listener is not loopback-only: ${JSON.stringify(only)}`);
-  const owner = tree.find((proc) => proc.pid === only.pid);
-  if (!owner || owner.name.toLowerCase() !== 'node.exe') {
-    throw new Error(`The listener is not owned by node.exe: ${JSON.stringify({ socket: only, tree })}`);
-  }
-  step('one-listener', `127.0.0.1:${only.port} LISTEN, owned by node.exe ${only.pid}`);
-
-  // ---- close the window: the whole tree must go --------------------------------
-  const closed = await closeMainWindow(appChild.pid, { onNote: note });
-  if (!closed) throw new Error('Could not find the packaged app main window to close (WM_CLOSE)');
-  const exitCodeSeen = await pollFor(
-    () => (appChild.exitCode !== null ? appChild.exitCode : null),
-    40_000,
-    'MetaDesk.exe did not exit within 40 s of WM_CLOSE',
-  );
-  if (exitCodeSeen !== 0) throw new Error(`MetaDesk.exe exited ${exitCodeSeen} on WM_CLOSE (expected 0)`);
-  step('close', `WM_CLOSE -> MetaDesk.exe exited ${exitCodeSeen}`);
-
-  await pollFor(
-    () => (!pidAlive(portfile.pid) && !pidAlive(engineNode.pid) ? true : null),
-    20_000,
-    'the engine processes survived the window close',
-  );
-  step('teardown', `server pid ${portfile.pid} and node pid ${engineNode.pid} are gone`);
-
-  const residue = [portfilePath, path.join(dataDir, 'instance.lock'), path.join(dataDir, 'stop.request')].filter(
-    existsSync,
-  );
-  if (residue.length > 0) {
-    throw new Error(`Residue left in the data dir: ${residue.map((p) => path.basename(p)).join(', ')}`);
-  }
-  step('residue', 'portfile / instance.lock / stop.request all swept');
-
-  await assertNoNewProcesses(before, { onNote: note });
-  step('no-orphans', 'node + exiftool back to the machine-wide baseline');
-}
-
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
@@ -531,51 +427,11 @@ function runCaptureExit(file, args, cwd) {
   });
 }
 
-async function pollFor(produce, timeoutMs, failure, extraFailure = null) {
-  const startedAt = Date.now();
-  let extraNote = '';
-  while (Date.now() - startedAt < timeoutMs) {
-    const extra = extraFailure === null ? null : extraFailure();
-    if (extra !== null && extra !== undefined) {
-      extraNote = extra;
-      break;
-    }
-    const value = await produce();
-    if (value !== null && value !== undefined && value !== false) return value;
-    await sleep(250);
-  }
-  throw new Error(`${failure}${extraNote === '' ? '' : ` (${extraNote})`}`);
-}
-
-async function fetchJson(url) {
-  try {
-    const response = await fetch(url);
-    let body = null;
-    try {
-      body = await response.json();
-    } catch {
-      body = { raw: (await response.text()).slice(0, 200) };
-    }
-    return { status: response.status, body };
-  } catch (error) {
-    return { status: 0, body: { error: String(error) } };
-  }
-}
-
 function readJson(filePath) {
   try {
     return JSON.parse(readFileSync(filePath, 'utf8'));
   } catch {
     return null;
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error !== null && typeof error === 'object' && error.code === 'EPERM';
   }
 }
 
@@ -587,8 +443,4 @@ function makeScratch() {
 
 function sha256File(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
