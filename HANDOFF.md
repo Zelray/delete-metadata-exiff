@@ -1202,3 +1202,31 @@ matching, as before.
 Proof: tagFamilies tests red-first (missing module) then 11/11; write suite
 green; typecheck 0; instruction 0; GATES_OK 8 steps; ratchet --update locked
 the writePipeline shrink.
+
+### 10.9 C9 — the outcome vocabulary, handled where it is declared (issue #23, local main)
+
+- `ExecuteResult.outcome: BatchOutcome | CancelledBatchOutcome` — the
+  cancelled arm is DECLARED. The writes route narrows with `'cancelled' in
+  result.outcome` (BatchOutcome has no such member, so `in` selects the
+  cancelled arm): the three structural casts (`as { cancelled?: boolean }`
+  etc.) are gone; cancelledAt/notAttemptedFilePaths read as declared types.
+- SseBridge: `case 'mode-changed':` typed arm (SseModeChangedEvent was
+  ALREADY a union member — the default-arm `as unknown as` was pure escape
+  hatch). Default arm now ignores only genuinely-unknown future events.
+  The 13-type additive union stays additive.
+- DELIBERATELY NOT DONE: a validate-once layer at the readSse seam. The
+  execute POST stream's ExecuteStreamFrame is a DIFFERENT shape from the
+  global SseEvent union; a validation layer there is a design decision that
+  could break the additive-unknown door ("clients ignore unknown types").
+  Reason recorded in issue #23.
+- New `ui/src/components/SseBridge.test.tsx` (3 tests) — CHARACTERIZATION
+  coverage (old default arm behaved identically; disclosed NOT red-first).
+  Runs through the REAL transport: stubbed global fetch feeding an actual
+  SSE stream; subscribeEvents/readSse parsing runs for real. The internal
+  API client is NEVER vi.mock'd (the internalMockFiles ratchet rule — first
+  draft mocked it and the ratchet refused; this version is better coverage).
+  Gotcha the real transport caught: non-increasing `seq` frames are dropped
+  as replays — test events need increasing seqs.
+
+Proof: SseBridge 3/3; UI 15 files; write suite green; typecheck 0;
+instruction 0; RATCHET_OK; GATES_OK 8 steps. Commit 2405363.
