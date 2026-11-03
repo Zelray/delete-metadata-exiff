@@ -1269,3 +1269,51 @@ This completes the 2026-11-02 architecture review stream: C1-C9 + all six
 small finds, ten issues (#15-#24), every one with red-first or
 disclosed-characterization tests, gates green throughout, all on local main
 unpushed (MD12).
+
+### 10.11 Issue #13 double-undo honesty (local main, commit 3370883)
+
+RE-DIAGNOSIS (read the post-#15 code before fixing the filed sketch): the
+double WRITE of issue #13 was already impossible — #15's plan consume is
+synchronous before the first await, so of two concurrent `undoBatch` calls
+exactly one can claim the plan. What survived the redesign was the HONESTY
+gap: the loser consulted the journal (no completed-undo record yet), found
+the batch still undoable, and reported `undo_preview_required` with the
+claim "nothing was executed" — false while the winner's writes were in
+flight (MD9 violation on the destructive path).
+
+FIX: `inFlightUndos` claim set on WritePipeline — added synchronously at
+consume time, cleared in a `finally` (success OR failure, so a partial undo
+stays re-prepareable). Both undo doors (`prepareUndo`/`prepareUndoPlan`)
+consult it and refuse with the new additive code `undo_in_progress`
+(409 in `mapWriteError`; the undo family otherwise rides 400 + verbatim
+message). Deliberately IN-MEMORY: it dies with the process, so a crashed
+undo leaves no stale claim and journal + recovery keep owning
+interrupted-undo semantics.
+
+REJECTED VARIANT (domain fact, do not re-derive): the issue's "in-flight
+marker in the journal" sketch would regress documented behavior — a
+batch-start WITHOUT a batch-end also describes a CRASHED partial undo,
+where re-planning must stay allowed; a journal scan for "start without end"
+would refuse those retries. The atomic consume is the safety gate; the
+claim set is the honesty gate.
+
+TESTS (red-first in writePipeline.test.ts, assertion-evidence reds — codes
+asserted as plain values): (1) two concurrent undoBatch calls in one tick —
+exactly one executes, the loser refuses `undo_in_progress` (red today:
+`undo_preview_required`); (2) `prepareUndo` refuses mid-flight (red today:
+`no_error`); (3) regression guard — post-flight attempts hear
+`already_undone` again (claim cleared, journal check ordered first).
+
+C7 raises (reasons in the commit body): writePipeline.ts 1063 → 1076;
+routes/writes.ts 441 → 442.
+
+SCOPE NOTES: no UI change — undo refusal messages ride to the client
+verbatim (failures.ts rules are pattern-based for the Results Report;
+precedent is #4's `undo_blocked`); help line 69 ("undoing the same batch
+twice is refused") stays true — the concurrent refusal is the same family,
+no edit; MD16 covered per the #4 precedent (refusal-path behavior owned by
+server behavior tests, no e2e).
+
+Evidence: red 2 failed as AssertionErrors; green 8/8 undo tests;
+GATES_OK all 8 steps serially; RATCHET_OK at the raised allowances;
+instruction 0; pre-commit hook green at commit time.
