@@ -79,6 +79,53 @@ export const MAX_BATCH_FILES = 5000;
 /** Common flags for every real write: MWG for human-facing fields, -P times. */
 const COMMON_WRITE_FLAGS: readonly string[] = Object.freeze(['-use', 'MWG', '-P']);
 
+/**
+ * THE one chunk invocation (issue #20, arch-review Candidate 3): common flags
+ * + edit args + the -efile manifest wiring + an optional scratch redirect +
+ * the chunk's files, in exactly the order the engine expects. Preview freezes
+ * it, execute runs it per chunk, simulation extends it with the scratch
+ * difference — before this function the three sites hand-spelled the layout,
+ * so one new flag was a three-place edit and the frozen command preview could
+ * drift from the argv that ran. An INTERNAL seam: the edit args themselves
+ * still come from the contract's builders (buildWriteArgs /
+ * buildDestructiveDeleteArgs / buildDestructiveRestoreArgs).
+ *
+ * Returns the manifest paths alongside the argv because every caller reads
+ * the manifests again after the run; the naming contract (<stem>-err /
+ * -same / -<third>) lives HERE. The third bucket is grammar, encoded once:
+ * 8 = files UPDATED in place ("-upd", the execute walk); 16 = files CREATED
+ * by a scratch "-o" write ("-created", the simulation walk). The scratch
+ * redirect, when given, always lands directly before the files.
+ */
+export function buildChunkArgv(input: {
+  editArgv: readonly string[];
+  files: readonly string[];
+  manifestDir: string;
+  manifestStem: string;
+  thirdBucket: 8 | 16;
+  scratchOutputDir: string | null;
+}): { argv: string[]; manifests: { errors: string; unchanged: string; third: string } } {
+  const thirdSuffix = input.thirdBucket === 8 ? 'upd' : 'created';
+  const manifests = {
+    errors: path.join(input.manifestDir, `${input.manifestStem}-err.txt`),
+    unchanged: path.join(input.manifestDir, `${input.manifestStem}-same.txt`),
+    third: path.join(input.manifestDir, `${input.manifestStem}-${thirdSuffix}.txt`),
+  };
+  const argv = [
+    ...COMMON_WRITE_FLAGS,
+    ...input.editArgv,
+    '-efile1',
+    manifests.errors,
+    '-efile2',
+    manifests.unchanged,
+    `-efile${input.thirdBucket}`,
+    manifests.third,
+    ...(input.scratchOutputDir === null ? [] : ['-o', input.scratchOutputDir]),
+    ...input.files,
+  ];
+  return { argv, manifests };
+}
+
 export type WritePipelineErrorCode =
   | 'preview_required'
   | 'preview_expired'
@@ -535,18 +582,14 @@ export class WritePipeline {
     }
 
     // ---- freeze the exact execute argv ---------------------------------------
+    // Issue #20: the frozen preview is the seam's execute-mode argv for chunk
+    // 0 — the same shape execute will spell for every chunk, so what the user
+    // confirms cannot drift from what runs.
     const manifestDir = path.join(this.dataDir, 'write-tmp', previewId);
-    const commandPreview = [
-      ...COMMON_WRITE_FLAGS,
-      ...editArgv,
-      '-efile1',
-      path.join(manifestDir, 'chunk0-err.txt'),
-      '-efile2',
-      path.join(manifestDir, 'chunk0-same.txt'),
-      '-efile8',
-      path.join(manifestDir, 'chunk0-upd.txt'),
-      ...(chunks[0] as string[]),
-    ];
+    const commandPreview = buildChunkArgv({
+      editArgv, files: chunks[0] as string[], manifestDir,
+      manifestStem: 'chunk0', thirdBucket: 8, scratchOutputDir: null,
+    }).argv;
 
     const previewFiles: WritePreviewFile[] = files.map((filePath) => {
       const fileDiffs = diffs.get(filePath) ?? [];
@@ -754,20 +797,12 @@ export class WritePipeline {
         // that would never happen.
         if (i === stored.chunks.length - 1) this.cancelClosedBatches.add(batchId);
         const chunk = stored.chunks[i] as string[];
-        const mErr = path.join(stored.manifestDir, `chunk${i}-err.txt`);
-        const mSame = path.join(stored.manifestDir, `chunk${i}-same.txt`);
-        const mUpd = path.join(stored.manifestDir, `chunk${i}-upd.txt`);
-        const argv = [
-          ...COMMON_WRITE_FLAGS,
-          ...stored.editArgv,
-          '-efile1',
-          mErr,
-          '-efile2',
-          mSame,
-          '-efile8',
-          mUpd,
-          ...chunk,
-        ];
+        // Issue #20: the same seam the preview froze — this chunk's argv is
+        // the frozen shape with its own manifest stem.
+        const { argv, manifests: wired } = buildChunkArgv({
+          editArgv: stored.editArgv, files: chunk, manifestDir: stored.manifestDir,
+          manifestStem: `chunk${i}`, thirdBucket: 8, scratchOutputDir: null,
+        });
 
         onProgress({ batchId, phase: 'write', index: i * this.chunkSize, total });
         const result = await this.engine.run(argv, { timeoutMs: 60_000 + chunk.length * 1_000 }).catch(
@@ -787,9 +822,9 @@ export class WritePipeline {
 
         const summary = parseSummary(`${result.stdout}\n${result.stderr}`);
         const manifests = {
-          errors: await readManifest(mErr),
-          unchanged: await readManifest(mSame),
-          updated: await readManifest(mUpd),
+          errors: await readManifest(wired.errors),
+          unchanged: await readManifest(wired.unchanged),
+          updated: await readManifest(wired.third),
         };
         consistencyNotes.push(...summarizeConsistency(summary, manifests));
         const classified = classifyFiles(chunk, manifests);
@@ -1224,22 +1259,13 @@ export class WritePipeline {
     editArgv: readonly string[],
     scratchDir: string,
   ): Promise<{ errors: string[]; unchanged: string[]; created: string[]; errorText: string }> {
-    const mErr = path.join(scratchDir, 'sim-err.txt');
-    const mSame = path.join(scratchDir, 'sim-same.txt');
-    const mCreated = path.join(scratchDir, 'sim-created.txt');
-    const argv = [
-      ...COMMON_WRITE_FLAGS,
-      ...editArgv,
-      '-efile1',
-      mErr,
-      '-efile2',
-      mSame,
-      '-efile16',
-      mCreated,
-      '-o',
-      scratchDir,
-      ...chunk,
-    ];
+    // Issue #20: the simulation IS the one chunk invocation — the scratch
+    // difference is parameters (created bucket 16 + the -o redirect), not a
+    // second copy of the layout.
+    const { argv, manifests } = buildChunkArgv({
+      editArgv, files: chunk, manifestDir: scratchDir, manifestStem: 'sim',
+      thirdBucket: 16, scratchOutputDir: scratchDir,
+    });
     const result = await this.engine.run(argv, { timeoutMs: 60_000 + chunk.length * 1_000 });
     const summary = parseSummary(result.stdout);
     const errorText =
@@ -1248,9 +1274,9 @@ export class WritePipeline {
         .map((d) => d.message)
         .join('; ') || (summary.notUpdatedDueToErrors > 0 ? `${summary.notUpdatedDueToErrors} file(s) had errors` : '');
     return {
-      errors: await readManifest(mErr),
-      unchanged: await readManifest(mSame),
-      created: await readManifest(mCreated),
+      errors: await readManifest(manifests.errors),
+      unchanged: await readManifest(manifests.unchanged),
+      created: await readManifest(manifests.third),
       errorText,
     };
   }

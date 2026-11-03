@@ -1107,3 +1107,40 @@ Proof: quality/bootAndProve.test.mjs 8/8; GATES_OK (8 steps); then ALL FOUR
 narratives green live, serially: package verification passed / desktop
 lifecycle matrix verification passed / desktop shell verification passed /
 clean-machine drill passed / update rehearsal passed.
+
+### 10.6 C3 — one chunk invocation inside WritePipeline (issue #20, local main)
+
+New exported seam `buildChunkArgv({editArgv, files, manifestDir, manifestStem,
+thirdBucket: 8|16, scratchOutputDir})` → `{argv, manifests {errors, unchanged,
+third}}` in `server/src/services/writePipeline.ts` (+ pure unit tests
+`server/test/write/chunkArgv.test.ts`, 3/3, red-first via missing export).
+THE layout — flags + edit args + `-efile1/-efile2/-efileN` wiring + optional
+`-o` + files, engine order — is defined once:
+
+- preview freezes the seam's execute-mode argv (stem `chunk0`) as
+  `commandPreview`; what the user confirms cannot drift from what runs.
+- execute spells every chunk through the seam (stem `chunk${i}`) and reads
+  the manifests AFTER the run via the seam's returned paths (the naming
+  contract moved into the seam with the wiring).
+- simulateChunk is the SAME call with `thirdBucket: 16` (created bucket,
+  `-created` suffix) + `scratchOutputDir` — the scratch difference is a
+  parameter, not a second copy.
+
+The bucket pairing is grammar encoded once: 8 = updated in place (`-upd`),
+16 = created by a scratch write (`-created`). An INTERNAL seam only —
+`buildWriteArgs` / `buildDestructiveDeleteArgs` / `buildDestructiveRestoreArgs`
+still own the edit args (engine-arguments contract untouched). The per-file
+display `argv` in the preview payload stays a product surface (simplified
+single-file shape; the hostile-names test pins `argv.at(-1) === filePath`).
+
+LINE BUDGET: the first ratchet run FAILED (1101 > 1085 — verbose call sites
+out-cost the deletions); fixed by merging the manifests interface into the
+return type and compacting the three call sites. Final: **1085 → 1084 code
+lines, gain locked via ratchet --update**. writePipeline's budget is still
+effectively exhausted at 1084/1084 — ANY addition must delete its own
+footprint.
+
+Gotcha for the next agent: manifest names for a chunk are now
+`<stem>-err/-same/-<third>` derived INSIDE the seam; execute's local
+`wired` holds the paths (readManifest consumes them post-run). Do not
+re-derive manifest paths by hand anywhere — extend the seam.
