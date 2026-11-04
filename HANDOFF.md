@@ -1416,6 +1416,12 @@ scoped re-reviews are recorded under
 `../.unlazy/dependabot-runtime-2026-11-03/REVIEW.md`.
 
 SCOPE: `package.json`, `package-lock.json`, and the new static test in commit
-c4669fe. The pre-existing Cargo lockfile edit, research notes, and TypeScript
-build artifacts stayed out of the commit. Issue #26 stays open pending the
-owner's push and the Dependabot API reconciliation.
+c4669fe, plus this handoff in b00df21. The pre-existing Cargo lockfile edit,
+research notes, and TypeScript build artifacts stayed out of the commits.
+
+RECONCILIATION (post-push, b00df21 on origin): Dependabot rescanned and marked
+alert #35 (glob, runtime) `fixed` at 2026-11-04T02:45:28Z on the lockfile
+evidence. Alert #36 (minimatch) remains `open` scoped `development` — the
+dev-only lint copies this change deliberately left. That remainder rides the
+deferred dev-toolchain dependency pass (§6.6), not this issue. Reconciliation
+comment: https://github.com/Zelray/delete-metadata-exiff/issues/26#issuecomment-6621162540
