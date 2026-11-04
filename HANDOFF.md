@@ -1358,3 +1358,64 @@ baseline. No application behavior or navigation changed, so MD16 needs no new
 end-to-end scenario. The pre-existing Cargo lockfile edit, research notes, and
 TypeScript build artifacts were left out of the commit. Issue #11 stays open
 pending the owner's push.
+
+### 10.13 Issue #26 runtime glob/minimatch remediation (local main, commit c4669fe)
+
+CORRECTION: the earlier issue #25/#26 record called these findings dev-only and
+swapped their alert numbers. The live API and installed tree proved a production
+path: `@fastify/static@10.1.5` → `glob@13.0.6` → `minimatch@10.2.6`.
+Alert #35 is glob. Alert #36 is minimatch. The original issue body and the
+revised decision are preserved under `../.unlazy/dependabot-runtime-2026-11-03/`.
+
+FIX: the root manifest now pins one override to the reviewed plugin version:
+`@fastify/static@10.1.5` → `glob@14.0.2`. The resolved production branch uses
+`minimatch@11.0.4` and `path-scurry@3.0.0`. No global minimatch override was
+added. The old minimatch 10.2.6 and 3.1.5 copies remain in the dev-only lint
+tree. `npm audit fix --force` was not used.
+
+COMPATIBILITY: MetaDesk's current `wildcard:true` setup loads glob but does not
+enumerate files through it. `server/test/read/staticAssets.test.ts` forces the
+`wildcard:false` branch to exercise the real glob walk. A temporary Windows root
+contains spaces and Unicode. Root, nested, spaced, and Unicode assets must return
+their exact bytes and content types. The glob-backed branch must hide dotfiles.
+The production wildcard branch must serve the same assets and 404 a missing file.
+This is a characterization test, not a red-first bug test. It passed 2/2 on glob
+13 before the edit and 2/2 on glob 14 afterward.
+
+SECURITY EVIDENCE: the pre-change production audit failed with 3 moderate
+instances. It now reports zero. The full audit dropped from 14 to 12 moderate
+instances. Every remaining instance is the same minimatch advisory in the
+dev-only ESLint/TypeScript lint chain. npm's suggested fix is a breaking
+downgrade, so those findings remain disclosed rather than forced. A remaining
+dev-scope GitHub alert must not be called fixed by this change.
+
+INSTALL NOTE: the first `npm install --ignore-scripts` marked the old glob
+invalid without re-resolving it. A targeted `npm update glob --ignore-scripts`
+was required. A later clean `npm ci --ignore-scripts` passed, proving the
+lockfile installs correctly without that intermediate state. Full `GATES_OK`
+followed the clean install. Pre-commit instruction and ratchet gates also passed.
+
+RUNTIME EVIDENCE: a real launcher served the built JS and CSS byte-identical to
+`ui/dist`, and `/history` returned the injected SPA. `verify-server` passed all
+14 steps. `verify-launch` passed boot, single-instance, graceful stop, residue,
+and no-orphan checks. `verify-desktop.mjs bundle` passed the staged Node 22
+bundle's boot, health, engine path, served UI, stdin-close stop, and no-orphan
+checks.
+
+TRANSIENT FAILURE: the first bundle run completed every product check but failed
+on new node PID 59964 during its machine-wide process-set assertion. The staged
+server PID was gone. PID 59964 had disappeared before the verifier tried to read
+its command line and was gone when queried directly. This was process churn, not
+a surviving bundle process. A diagnosed quiet-machine rerun passed in full.
+
+REVIEW: backend architecture and security specialists approved the bounded
+override after reviewing the final evidence. Their remaining closeout items were
+selective staging, this handoff, and the scoped evidence comment. An independent
+code reviewer found the same closeout items and no technical defect. The final
+scoped re-reviews are recorded under
+`../.unlazy/dependabot-runtime-2026-11-03/REVIEW.md`.
+
+SCOPE: `package.json`, `package-lock.json`, and the new static test in commit
+c4669fe. The pre-existing Cargo lockfile edit, research notes, and TypeScript
+build artifacts stayed out of the commit. Issue #26 stays open pending the
+owner's push and the Dependabot API reconciliation.
