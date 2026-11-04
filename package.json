@@ -9,6 +9,11 @@
     "ui",
     "tests-e2e"
   ],
+  "overrides": {
+    "@fastify/static@10.1.5": {
+      "glob": "14.0.2"
+    }
+  },
   "scripts": {
     "test": "npm --workspace server test",
     "build": "npm --workspaces --if-present run build",
